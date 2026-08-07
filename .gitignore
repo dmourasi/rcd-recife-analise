@@ -1,0 +1,20 @@
+# Dados de campo e planilhas do estudo — NÃO versionar enquanto o artigo não
+# estiver publicado. O relatório já apresenta todas as tabelas agregadas.
+*.xlsx
+*.xls
+*.docx
+dados_geo/
+pontos_processados.csv
+bairros_stats.csv
+_dados_cache.rds
+
+# Artefatos de renderização
+_web.qmd
+_web.html
+_web.rmarkdown
+*.rmarkdown
+*_files/
+*_cache/
+.Rproj.user
+.Rhistory
+.RData

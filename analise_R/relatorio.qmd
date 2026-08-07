@@ -1,0 +1,1470 @@
+---
+title: "Análise Estatística do Descarte Irregular de Resíduos de Construção e Demolição"
+subtitle: "The Geometry of Disposal — Recife, Pernambuco, Brasil"
+author: "Relatório técnico-estatístico"
+date: today
+date-format: "D [de] MMMM [de] YYYY"
+lang: pt
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    toc-title: "Sumário"
+    toc-location: left
+    number-sections: true
+    ## Dois temas coordenados: o Quarto troca fundo E texto juntos e oferece um
+    ## botão de alternância. Nunca forçar cor de texto via @media no CSS —
+    ## isso clareia a fonte sem clarear o fundo e torna o texto ilegível.
+    ## O `css:` abaixo entra em ambos os temas (só tipografia e espaçamento);
+    ## arquivos listados dentro de `theme:` seriam tratados como SCSS.
+    theme:
+      light: cosmo
+      dark: darkly
+    fig-width: 8
+    fig-height: 5
+    fig-dpi: 200
+    tbl-cap-location: top
+    fig-cap-location: bottom
+    code-fold: true
+    code-summary: "Ver código"
+    code-tools: true
+    embed-resources: true
+    smooth-scroll: true
+    css: estilo.css
+execute:
+  echo: true
+  warning: false
+  message: false
+  cache: false
+knitr:
+  opts_chunk:
+    comment: "#>"
+    collapse: false
+bibliography: []
+---
+
+```{r}
+#| label: setup
+#| include: false
+
+source("00_setup.R")
+source("02_analises.R")
+
+## O cache acelera reprocessamentos: a integração espacial (1.316 pontos contra
+## 746 feições hidrográficas) leva alguns minutos.
+if (file.exists("_dados_cache.rds")) {
+  DADOS <- readRDS("_dados_cache.rds")
+} else {
+  source("01_dados.R")
+  saveRDS(DADOS, "_dados_cache.rds")
+}
+
+pts     <- DADOS$pts
+rpa     <- DADOS$rpa
+bairros <- DADOS$bairros
+
+## Impressão padronizada de tabelas
+tab <- function(df, legenda = NULL, digitos = 2, ...) {
+  knitr::kable(df, caption = legenda, digits = digitos,
+               format.args = list(big.mark = ".", decimal.mark = ","),
+               booktabs = TRUE, ...) |>
+    kableExtra::kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                              full_width = FALSE, position = "left",
+                              font_size = 13)
+}
+```
+
+::: {.callout-note appearance="simple"}
+## Sobre este documento
+
+Este relatório documenta, passo a passo, toda a análise estatística do estudo:
+da auditoria dos dados brutos às análises espaciais confirmatórias e aos testes
+de robustez. Cada seção apresenta **o que foi feito**, **por que aquele método
+foi escolhido**, **o resultado** e **como interpretá-lo no contexto do artigo**.
+
+O documento é integralmente reprodutível: todo número, tabela e figura é gerado
+pelo código exibido (clique em *Ver código*). Os scripts estão em
+`00_setup.R` (ambiente e parâmetros), `01_dados.R` (leitura e limpeza),
+`02_analises.R` (rotinas estatísticas) e `relatorio.qmd` (este texto).
+:::
+
+# Sumário executivo {#sec-sumario}
+
+```{r}
+#| label: sumario-numeros
+#| echo: false
+
+n <- DADOS$n
+```
+
+**Objetivo do estudo.** Avaliar a relação espacial entre os pontos de descarte
+irregular de Resíduos de Construção e Demolição (RCD) em Recife e três critérios
+ambientais — corpos hídricos, unidades de saúde e instituições de ensino — e
+classificar o risco ambiental resultante.
+
+**O que esta análise acrescenta.** A versão anterior do manuscrito apoiava-se em
+estatística descritiva e em testes qui-quadrado sobre classes de distância. Foram
+acrescentados: (i) auditoria formal da base de coordenadas; (ii) estatística
+descritiva completa das distâncias contínuas; (iii) análise de padrão de pontos e
+de autocorrelação espacial, que testam diretamente a hipótese central do trabalho;
+(iv) comparação inferencial do escore de risco entre regiões; e (v) uma bateria de
+análises de robustez.
+
+::: {.callout-important}
+## Seis achados que alteram conclusões do manuscrito
+
+1. **A base tem `r n$bruto` coordenadas, não `r n$manuscrito`.** A auditoria
+   identificou um erro tipográfico sistemático em `r n$corrigido` registros e
+   `r n$excluido` coordenadas irrecuperáveis (@sec-auditoria).
+2. **Normalizada pela área, a RPA 1 (Centro) é tão crítica quanto a RPA 4.**
+   O manuscrito, usando contagens brutas, aponta apenas a RPA 4 (@sec-rpa).
+3. **O padrão espacial é significativamente agregado** (índice R ≈ 0,44;
+   I de Moran ≈ 0,29), com um cinturão contíguo de *hot spots* que atravessa a
+   fronteira entre RPAs — o fenômeno é de escala de bairro, não de RPA (@sec-espacial).
+4. **Contra o território, os pontos estão MAIS PRÓXIMOS dos três critérios do
+   que o acaso produziria** (p < 0,001) — a afirmação de que estariam
+   "afastados" não resiste à hipótese nula geograficamente correta (@sec-csr).
+5. **A RPA 4 concentra mais pontos, porém individualmente menos arriscados**
+   que os do Centro (@sec-risco).
+6. **A distância mediana até uma ecoestação é de ~2 km**, indicando déficit de
+   cobertura da rede — e não apenas falha de educação ambiental (@sec-eco).
+:::
+
+# Metodologia estatística {#sec-metodo}
+
+## Delineamento e unidade de análise
+
+Estudo observacional, ecológico e de corte transversal. A unidade de análise é o
+**ponto de descarte irregular** georreferenciado em campo. As unidades de
+agregação são o **bairro** (n = 94) e a **Região Político-Administrativa — RPA**
+(n = 6).
+
+## Fontes de dados
+
+```{r}
+#| label: tbl-fontes
+#| tbl-cap: "Fontes de dados utilizadas na análise"
+#| echo: false
+
+tibble::tibble(
+  Camada = c("Pontos de descarte irregular", "Limites das RPAs", "Limites de bairros",
+             "Hidrografia", "Unidades de saúde", "Unidades de ensino",
+             "Ecoestações (recebem RCD)", "Renda domiciliar por ponto"),
+  `Registros` = c(DADOS$n$bruto, nrow(rpa), nrow(bairros), nrow(DADOS$hidrico),
+                  nrow(DADOS$saude), nrow(DADOS$escolas), nrow(DADOS$eco_rcc),
+                  sum(DADOS$renda$n)),
+  Origem = c("Levantamento de campo (autores)",
+             rep("Portal de Dados Abertos da Prefeitura do Recife (ODbL)", 6),
+             "Planilha do estudo")
+) |> tab()
+```
+
+## Sistema de referência e cálculo de distâncias
+
+As coordenadas foram coletadas em graus decimais (WGS 84, EPSG:4326) e
+reprojetadas para **SIRGAS 2000 / UTM 25S (EPSG:31985)**, sistema métrico
+adequado à latitude de Recife. Distâncias são euclidianas ao elemento **mais
+próximo** de cada categoria, calculadas sobre geometrias completas (polígonos e
+linhas), não sobre centroides — o que evita subestimar a proximidade a rios e
+terrenos extensos.
+
+## Métodos empregados e justificativa
+
+```{r}
+#| label: tbl-metodos
+#| tbl-cap: "Métodos estatísticos, finalidade e justificativa da escolha"
+#| echo: false
+
+tibble::tribble(
+  ~Método, ~Finalidade, ~`Por que este método`,
+  "Descritivas + assimetria/curtose padronizadas", "Caracterizar as distâncias", "Distribuições assimétricas exigem mediana e IQR além de média e DP",
+  "Anderson-Darling, Lilliefors, Shapiro-Wilk", "Testar normalidade", "AD é sensível às caudas, onde estão os pontos de maior risco",
+  "Qui-quadrado de aderência + resíduos + Cohen's w", "Testar uniformidade das classes", "Resíduos mostram QUAIS classes sustentam a rejeição; w mede magnitude",
+  "Qui-quadrado de independência + V de Cramér", "Comparar critérios entre si", "V é o tamanho de efeito adequado a tabelas maiores que 2×2",
+  "IC de Wilson", "Precisão das proporções", "Superior a Wald quando p é próximo de 0 ou 1 — caso das classes extremas",
+  "Índice de Clark & Evans (R)", "Testar aleatoriedade espacial", "Teste global clássico de agregação em padrão de pontos",
+  "Função L de Ripley + envelope MC", "Agregação em múltiplas escalas", "Verifica se a agregação persiste além da escala do vizinho imediato",
+  "Simulação de aleatoriedade completa (CSR)", "Proximidade contra o território", "Constrói a hipótese nula geograficamente correta, que o qui-quadrado não fornece",
+  "Densidade Kernel", "Visualizar concentração", "Superfície contínua, independente de limites administrativos",
+  "Correlação de Spearman entre critérios", "Testar redundância do modelo", "Somar componentes correlacionados atribuiria peso oculto ao mesmo fenômeno",
+  "I de Moran (analítico + permutação)", "Autocorrelação espacial", "Testa se bairros vizinhos têm densidades semelhantes",
+  "Getis-Ord Gi* + correção FDR", "Localizar clusters", "Identifica hot spots; FDR controla o problema de testes múltiplos",
+  "Kruskal-Wallis + Dunn-Bonferroni", "Comparar risco entre RPAs", "Escore de risco é ordinal e assimétrico — não atende à ANOVA",
+  "Bootstrap BCa (5.000 reamostras)", "IC sem suposição distribucional", "Corrige viés e assimetria das distribuições de distância",
+  "Análise de sensibilidade dos pesos", "Robustez do modelo de risco", "Responde à crítica de arbitrariedade dos pesos da Equação 1"
+) |> tab()
+```
+
+Nível de significância: **α = `r PARAMS$alfa`**. Testes bicaudais.
+Sementes fixadas (`set.seed(`r PARAMS$semente`)`) para reprodutibilidade exata
+dos procedimentos de reamostragem.
+
+---
+
+# PARTE I — Auditoria e preparação dos dados {#sec-auditoria}
+
+::: {.callout-tip appearance="simple"}
+Nenhuma análise é mais confiável que os dados que a alimentam. Esta seção
+documenta a auditoria antes de qualquer inferência — prática exigida por
+periódicos que adotam diretrizes de dados abertos.
+:::
+
+## Auditoria das coordenadas
+
+Cada coordenada foi testada contra o polígono oficial do município. Para as que
+caíam fora, aplicou-se uma **lista fixa e ordenada de correções tipográficas
+plausíveis**, aceitando-se a primeira que reposicionasse o ponto dentro do
+território (tolerância de `r PARAMS$tol_borda_m` m para imprecisão de GPS).
+Nenhum ponto foi deslocado para "o lugar mais próximo": ou existe uma correção
+tipográfica que o traz para dentro, ou ele é excluído.
+
+```{r}
+#| label: tbl-auditoria
+#| tbl-cap: "Resultado da auditoria das coordenadas"
+
+DADOS$auditoria_resumo |>
+  dplyr::rename(`Situação` = correcao, `n` = n, `%` = `%`) |>
+  tab(digitos = 2)
+```
+
+O achado mais relevante é o erro **sistemático** (não aleatório) no dígito da
+longitude: `r sum(DADOS$auditoria$correcao == "dígito 4/8 na longitude")`
+registros tinham "4" onde deveria haver "8" na primeira casa decimal, deslocando
+o ponto cerca de 44 km para leste (oceano). O padrão é consistente com digitação
+manual em lote.
+
+```{r}
+#| label: tbl-conciliacao
+#| tbl-cap: "Conciliação entre a base bruta e o N declarado no manuscrito"
+
+tibble::tibble(
+  Etapa = c("Coordenadas na planilha", "Corrigidas por tipografia",
+            "Excluídas (irrecuperáveis)", "**Válidas para análise**",
+            "Coordenadas exatamente duplicadas", "Locais geograficamente únicos",
+            "N declarado no manuscrito"),
+  n = c(n$bruto, n$corrigido, n$excluido, n$valido, n$duplicado,
+        n$locais_unicos, n$manuscrito)
+) |> tab()
+```
+
+::: {.callout-warning}
+## Decisão pendente dos autores
+
+As `r n$duplicado` coordenadas duplicadas podem ser (a) registros legítimos de
+descartes repetidos no mesmo local ou (b) dupla digitação. A escolha altera o N
+de `r n$valido` para `r n$locais_unicos`. **Todas as análises espaciais desta
+seção usam locais únicos** (procedimento correto para padrão de pontos); as
+análises de frequência usam o conjunto completo. O teste de robustez em
+@sec-robustez-dup quantifica o impacto dessa escolha.
+:::
+
+## Correção da caracterização territorial
+
+O manuscrito atribui à RPA 1 a mesma população e área da RPA 6
+(370.907 hab.; 41,812 km²) — inconsistência de edição. As áreas foram
+recalculadas a partir da geometria oficial:
+
+```{r}
+#| label: tbl-areas
+#| tbl-cap: "Áreas oficiais das RPAs e distribuição dos pontos de descarte"
+
+area_tab <- rpa |>
+  sf::st_drop_geometry() |>
+  dplyr::transmute(RPA, `Área (km²)` = area_km2) |>
+  dplyr::mutate(
+    `Bairros` = DADOS$bairros_por_rpa,
+    `Pontos (manuscrito)` = as.integer(DADOS$tab_manuscrito$rpa),
+    `Pontos (recomputado)` = as.integer(table(pts$RPA)),
+    `Densidade (pts/km²)` = `Pontos (manuscrito)` / `Área (km²)`,
+    `Área no manuscrito (km²)` = c(41.812, 14.823, 78.826, 42.104, 29.898, 41.812)
+  )
+tab(area_tab)
+```
+
+A contagem recomputada reproduz a do manuscrito com diferença máxima de
+`r max(abs(as.integer(table(pts$RPA)) - DADOS$tab_manuscrito$rpa))` pontos,
+o que **valida a atribuição espacial original dos autores**. Apenas a área da
+RPA 1 estava incorreta (`r fmt_n(rpa$area_km2[1])` km², não 41,812 km²).
+
+---
+
+# PARTE II — Estatística descritiva {#sec-descritiva}
+
+## Distâncias aos critérios ambientais
+
+Esta é a tabela-resumo de estatísticas descritivas solicitada na revisão. Ela
+substitui a apresentação apenas por classes, que descarta informação contínua.
+
+```{r}
+#| label: tbl-descritivas
+#| tbl-cap: "Estatística descritiva das distâncias de cada ponto ao elemento mais próximo (m)"
+
+desc_todas <- dplyr::bind_rows(
+  descrever(pts$d_agua,   "Corpos hídricos"),
+  descrever(pts$d_saude,  "Unidades de saúde"),
+  descrever(pts$d_escola, "Instituições de ensino"),
+  descrever(pts$d_eco,    "Ecoestações (RCD)")
+)
+
+desc_todas |>
+  dplyr::select(Variável, n, Média, DP, `CV (%)`, Mediana, Q1, Q3, IQR,
+                Mínimo, Máximo) |>
+  tab(digitos = 1)
+```
+
+```{r}
+#| label: tbl-forma
+#| tbl-cap: "Medidas de forma e precisão da média"
+
+desc_todas |>
+  dplyr::transmute(
+    Variável, `EP da média` = EP,
+    `IC95 da média` = sprintf("[%s; %s]", fmt_n(`IC95 inf`, 1), fmt_n(`IC95 sup`, 1)),
+    Assimetria, `Assimetria/EP` = Assimetria / `EP assim.`,
+    `Curtose (excesso)` = Curtose, `Curtose/EP` = Curtose / `EP curt.`,
+    Forma = dplyr::if_else(Assimetria > 1, "fortemente assimétrica à direita",
+                           "moderadamente assimétrica")
+  ) |>
+  tab(digitos = 2)
+```
+
+**Interpretação.** Todas as distribuições são assimétricas à direita
+(assimetria > 1 em três das quatro variáveis, com razão assimetria/EP muito
+acima de 2). A média excede a mediana em todos os casos: há uma cauda de pontos
+muito distantes que infla a média. **Consequência metodológica:** a mediana é a
+medida de tendência central apropriada, e todos os testes de comparação devem
+ser não paramétricos — o que justifica a escolha do Kruskal-Wallis em @sec-risco.
+
+A hierarquia de proximidade confirma o achado central do manuscrito:
+**corpos hídricos são o critério sistematicamente mais próximo** dos pontos de
+descarte (mediana `r fmt_n(median(pts$d_agua), 0)` m), seguidos por instituições
+de ensino (`r fmt_n(median(pts$d_escola), 0)` m) e unidades de saúde
+(`r fmt_n(median(pts$d_saude), 0)` m).
+
+```{r}
+#| label: fig-boxplot
+#| fig-cap: "Distribuição das distâncias dos pontos de descarte a cada critério ambiental. Caixas: quartis; linha branca: mediana; losango: média. Escala logarítmica evidencia a assimetria."
+#| fig-height: 4
+
+longo <- pts |>
+  sf::st_drop_geometry() |>
+  dplyr::select(`Corpos hídricos` = d_agua, `Instituições de ensino` = d_escola,
+                `Unidades de saúde` = d_saude, `Ecoestações` = d_eco) |>
+  tidyr::pivot_longer(dplyr::everything(), names_to = "Critério", values_to = "d") |>
+  dplyr::filter(d > 0)
+
+ggplot(longo, aes(x = reorder(Critério, d, median), y = d)) +
+  geom_boxplot(fill = COR$primaria, colour = COR$neutra, outlier.size = 0.5,
+               outlier.alpha = 0.25, width = 0.55,
+               staplewidth = 0.3) +
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 2.6,
+               colour = COR$destaque) +
+  scale_y_log10(labels = scales::label_number(big.mark = ".", decimal.mark = ",")) +
+  coord_flip() +
+  labs(x = NULL, y = "Distância ao elemento mais próximo (m, escala log)",
+       caption = "Losango laranja: média aritmética. n = 1.316 pontos.") +
+  tema_artigo()
+```
+
+## Distribuição acumulada: leitura independente dos cortes de classe
+
+```{r}
+#| label: fig-ecdf
+#| fig-cap: "Função de distribuição acumulada empírica das distâncias. Para qualquer limiar no eixo horizontal, a curva informa a proporção de pontos situados abaixo dele — sem depender dos cortes de classe adotados na Tabela 1. Linhas verticais marcam os limiares de 20 m, 80 m e 160 m."
+#| fig-height: 4.2
+
+ggplot(longo, aes(x = d, colour = Critério)) +
+  geom_vline(xintercept = c(20, 80, 160), colour = COR$grade, linewidth = 0.5) +
+  stat_ecdf(linewidth = 0.85) +
+  scale_x_log10(labels = scales::label_number(big.mark = ".", decimal.mark = ","),
+                breaks = c(10, 20, 50, 80, 160, 500, 1000, 5000)) +
+  scale_y_continuous(labels = scales::label_percent(accuracy = 1)) +
+  scale_colour_manual(values = c(COR$primaria, COR$destaque, "#1baf7a", COR$neutra)) +
+  labs(x = "Distância (m, escala log)", y = "Proporção acumulada de pontos",
+       colour = NULL,
+       caption = "Linhas cinza: limiares de 20 m, 80 m e 160 m usados na classificação de risco.") +
+  tema_artigo()
+```
+
+::: {.callout-tip appearance="simple"}
+## Por que esta figura importa para a revisão
+
+A crítica de que os cortes de distância (20, 40, 80, 160 m) são arbitrários
+perde força diante da curva acumulada: ela permite ao leitor **ler a proporção
+de pontos abaixo de qualquer limiar que considere relevante**, inclusive os que
+o estudo não adotou. É a forma mais transparente de apresentar dados de
+distância e complementa — sem substituir — a tabela de classes.
+:::
+
+## Testes de normalidade
+
+```{r}
+#| label: tbl-normalidade
+#| tbl-cap: "Bateria de testes de aderência à distribuição normal"
+
+dplyr::bind_rows(
+  bateria_normalidade(pts$d_agua,   "Corpos hídricos"),
+  bateria_normalidade(pts$d_saude,  "Unidades de saúde"),
+  bateria_normalidade(pts$d_escola, "Instituições de ensino"),
+  bateria_normalidade(pts$Sf,       "Escore de risco (Sf)")
+) |>
+  dplyr::mutate(dplyr::across(dplyr::starts_with("p ("), fmt_p)) |>
+  tab(digitos = 3)
+```
+
+Todos os testes rejeitam a normalidade (p < 0,001). Como em amostras grandes
+(n > 1.000) os testes formais detectam desvios triviais, a decisão apoia-se
+sobretudo nas **medidas de forma**: razões assimetria/EP e curtose/EP muito
+superiores a 2 confirmam afastamento substantivo, não apenas significativo.
+Isso fundamenta o uso de métodos não paramétricos e de bootstrap em todo o
+relatório.
+
+## Distribuição por classes de distância
+
+```{r}
+#| label: tbl-classes
+#| tbl-cap: "Distribuição dos pontos por classe de distância, segundo os cortes da Tabela 1 do manuscrito"
+
+freq_classes <- function(cl, nome) {
+  t <- table(cl)
+  tibble::tibble(Critério = nome, Classe = names(t), n = as.integer(t),
+                 `%` = 100 * as.numeric(t) / sum(t),
+                 `% acumulado` = cumsum(100 * as.numeric(t) / sum(t)))
+}
+dplyr::bind_rows(
+  freq_classes(pts$cl_agua,   "Corpos hídricos"),
+  freq_classes(pts$cl_saude,  "Unidades de saúde"),
+  freq_classes(pts$cl_escola, "Instituições de ensino")
+) |> tab(digitos = 2)
+```
+
+```{r}
+#| label: fig-classes
+#| fig-cap: "Proporção de pontos por classe de distância. A concentração na classe mais distante é acentuada para equipamentos públicos e substancialmente menor para corpos hídricos."
+#| fig-height: 3.6
+
+dplyr::bind_rows(
+  freq_classes(pts$cl_agua,   "Corpos hídricos"),
+  freq_classes(pts$cl_saude,  "Unidades de saúde"),
+  freq_classes(pts$cl_escola, "Instituições de ensino")
+) |>
+  dplyr::mutate(Classe = factor(Classe, levels = unique(Classe))) |>
+  ggplot(aes(x = Classe, y = `%`, fill = Critério)) +
+  geom_col(position = position_dodge(width = 0.8), width = 0.72) +
+  scale_fill_manual(values = c(COR$primaria, COR$destaque, "#1baf7a")) +
+  labs(x = "Classe de distância (m)", y = "% dos pontos", fill = NULL) +
+  tema_artigo()
+```
+
+## Distribuição segundo a renda domiciliar
+
+```{r}
+#| label: tbl-renda
+#| tbl-cap: "Distribuição dos pontos de descarte por faixa de renda domiciliar (R$)"
+
+renda_tab <- DADOS$renda |>
+  dplyr::mutate(`%` = 100 * n / sum(n),
+                `% acumulado` = cumsum(`%`))
+tab(renda_tab)
+```
+
+```{r}
+#| label: renda-resumo
+#| echo: false
+com_dado <- DADOS$renda$n[DADOS$renda$faixa != "Sem dados"]
+tot_cd <- sum(com_dado)
+pct_ate_1020 <- 100 * sum(com_dado[1:3]) / tot_cd
+```
+
+**`r fmt_n(pct_ate_1020, 1)`%** dos pontos com informação disponível situam-se em
+áreas de renda domiciliar de até R$ 1.020, e apenas
+`r fmt_n(100 * sum(com_dado[7:8]) / tot_cd, 2)`% acima de R$ 2.550. Este é o
+insumo empírico para a discussão de justiça ambiental — a análise inferencial
+correspondente está em @sec-renda-inf.
+
+---
+
+# PARTE III — Inferência sobre distribuições de frequência {#sec-inferencia}
+
+## Reprodução e ampliação dos testes do manuscrito
+
+Os testes já publicados foram **reproduzidos integralmente** a partir das tabelas
+do manuscrito, e ampliados com tamanho de efeito e resíduos padronizados.
+
+```{r}
+#| label: tbl-gof
+#| tbl-cap: "Testes qui-quadrado de aderência à distribuição uniforme (dados das Tabelas X1 e X2 do manuscrito)"
+
+gof_saude <- qui_aderencia(DADOS$tab_manuscrito$saude,    rotulo = "Distância a unidades de saúde")
+gof_educ  <- qui_aderencia(DADOS$tab_manuscrito$educacao, rotulo = "Distância a instituições de ensino")
+gof_agua  <- qui_aderencia(DADOS$tab_manuscrito$agua,     rotulo = "Distância a corpos hídricos")
+
+dplyr::bind_rows(gof_saude$resumo, gof_educ$resumo, gof_agua$resumo) |>
+  dplyr::mutate(`valor-p` = fmt_p(`valor-p`)) |>
+  tab(digitos = 2)
+```
+
+Os valores de χ² reproduzem exatamente os publicados (4.589,78; 4.441,01;
+2.698,21), confirmando a correção dos cálculos originais. **O que faltava era o
+tamanho de efeito:** os três Cohen's w acima de 1,4 caracterizam efeitos
+"grandes" com folga (critério de Cohen: w ≥ 0,50), informação exigida no reporte
+de resultados e ausente na versão anterior.
+
+```{r}
+#| label: tbl-residuos
+#| tbl-cap: "Resíduos padronizados do teste de aderência — corpos hídricos"
+
+gof_agua$detalhe |> tab(digitos = 2)
+
+contrib_ultima <- gof_agua$detalhe[["Contrib. χ² (%)"]][5]
+```
+
+**Como ler os resíduos.** Valores acima de |1,96| indicam categorias que se
+afastam significativamente do esperado. Para corpos hídricos, a classe > 120 m
+concentra `r fmt_n(contrib_ultima, 1)`% de toda a
+estatística χ² — ou seja, a rejeição de H₀ é sustentada quase inteiramente pelo
+excesso de pontos distantes, e não por concentração nas classes críticas. Esta é
+uma leitura que o manuscrito não fazia e que **reforça** sua conclusão de risco
+predominantemente baixo.
+
+## Comparação entre os três critérios
+
+```{r}
+#| label: tbl-independencia
+#| tbl-cap: "Teste de independência entre critério avaliado e classe de distância"
+
+tabela_3x5 <- rbind(
+  `Unidades de saúde`     = DADOS$tab_manuscrito$saude,
+  `Instituições de ensino`= DADOS$tab_manuscrito$educacao,
+  `Corpos hídricos`       = DADOS$tab_manuscrito$agua
+)
+ind <- qui_independencia(tabela_3x5, "Critério × classe de distância")
+ind$resumo |> dplyr::mutate(`valor-p` = fmt_p(`valor-p`)) |> tab(digitos = 3)
+
+v_cramer <- ind$resumo[["V de Cramér"]]
+v_ic <- sprintf("[%s; %s]", fmt_n(ind$resumo[["IC95 inf"]], 3),
+                fmt_n(ind$resumo[["IC95 sup"]], 3))
+```
+
+O V de Cramér de `r fmt_n(v_cramer, 3)`
+(IC95% `r v_ic`)
+indica associação **fraca a moderada**: os três critérios de fato diferem entre
+si, mas a magnitude é modesta. O intervalo de confiança bootstrap — ausente no
+manuscrito — mostra que essa estimativa é precisa.
+
+```{r}
+#| label: tbl-residuos-ind
+#| tbl-cap: "Resíduos padronizados ajustados da tabela de contingência (|valor| > 1,96 indica célula que se afasta do esperado)"
+
+ind$residuos |> tab(digitos = 2)
+```
+
+Os resíduos localizam a diferença: corpos hídricos apresentam **excesso** de
+pontos nas classes próximas (0–20 m e 20–40 m) e **déficit** na classe mais
+distante — precisamente o padrão que torna a água o critério ambientalmente mais
+crítico.
+
+## Precisão das proporções (intervalos de Wilson)
+
+```{r}
+#| label: tbl-wilson
+#| tbl-cap: "Intervalos de confiança de 95% (método de Wilson) para as proporções-chave do manuscrito"
+
+props <- tibble::tribble(
+  ~Indicador, ~k, ~N,
+  "Pontos a ≤ 20 m de corpo hídrico", 64L, 1308L,
+  "Pontos a ≤ 80 m de corpo hídrico", 186L, 1308L,
+  "Pontos a > 160 m de unidade de saúde", 1241L, 1308L,
+  "Pontos a > 160 m de instituição de ensino", 1225L, 1308L,
+  "Pontos localizados na RPA 4", 398L, 1308L
+)
+props |>
+  dplyr::rowwise() |>
+  dplyr::mutate(`Proporção (%)` = 100 * k / N,
+                `IC95 inf (%)` = ic_wilson(k, N)[1],
+                `IC95 sup (%)` = ic_wilson(k, N)[2],
+                `Amplitude (pp)` = `IC95 sup (%)` - `IC95 inf (%)`) |>
+  dplyr::ungroup() |>
+  tab(digitos = 2)
+```
+
+O método de Wilson foi preferido ao intervalo de Wald porque este último produz
+limites inválidos (fora de [0, 1]) quando a proporção se aproxima dos extremos —
+exatamente o caso das classes de risco crítico.
+
+## Distribuição entre RPAs: correção da hipótese nula {#sec-rpa}
+
+::: {.callout-important}
+## Correção metodológica necessária
+
+O manuscrito testa a distribuição por RPA contra uma **hipótese uniforme**
+(218 pontos esperados por RPA). Isso é inadequado: as RPAs diferem em área por
+um fator superior a cinco (`r fmt_n(min(rpa$area_km2),1)` a
+`r fmt_n(max(rpa$area_km2),1)` km²). Sob H₀ correta, o número esperado de pontos
+deve ser **proporcional à área**.
+:::
+
+```{r}
+#| label: tbl-rpa-chi
+#| tbl-cap: "Distribuição dos pontos por RPA sob duas hipóteses nulas"
+
+obs_rpa <- DADOS$tab_manuscrito$rpa
+gof_unif <- qui_aderencia(obs_rpa, rotulo = "H₀ uniforme (como no manuscrito)")
+gof_area <- qui_aderencia(obs_rpa, esperado_p = rpa$area_km2 / sum(rpa$area_km2),
+                          rotulo = "H₀ proporcional à área (correta)")
+
+dplyr::bind_rows(gof_unif$resumo, gof_area$resumo) |>
+  dplyr::mutate(`valor-p` = fmt_p(`valor-p`)) |>
+  tab(digitos = 2)
+```
+
+**A conclusão substantiva se mantém** — a distribuição não é homogênea sob
+nenhuma das hipóteses. Mas a normalização muda a leitura sobre *quais* regiões
+são críticas:
+
+```{r}
+#| label: tbl-rpa-detalhe
+#| tbl-cap: "Diagnóstico por RPA sob a hipótese nula proporcional à área"
+
+gof_area$detalhe |>
+  dplyr::mutate(RPA = rpa$RPA, `Área (km²)` = rpa$area_km2,
+                `Densidade (pts/km²)` = Observado / `Área (km²)`) |>
+  dplyr::select(RPA, `Área (km²)`, Observado, Esperado, `Densidade (pts/km²)`,
+                `Resíduo ajust.`, `Contrib. χ² (%)`) |>
+  dplyr::arrange(dplyr::desc(`Densidade (pts/km²)`)) |>
+  tab(digitos = 2)
+```
+
+```{r}
+#| label: fig-densidade-rpa
+#| fig-cap: "Contagem bruta versus densidade de pontos por RPA. A ordenação muda: em densidade, a RPA 1 (Centro) iguala a RPA 4, e a RPA 3 deixa de parecer crítica."
+#| fig-height: 3.8
+
+comp <- tibble::tibble(
+  RPA = factor(paste("RPA", rpa$RPA)),
+  `Contagem bruta` = as.numeric(obs_rpa),
+  `Densidade (pts/km²)` = as.numeric(obs_rpa) / rpa$area_km2
+) |>
+  tidyr::pivot_longer(-RPA, names_to = "Métrica", values_to = "valor")
+
+ggplot(comp, aes(x = reorder(RPA, valor), y = valor, fill = Métrica)) +
+  geom_col(width = 0.7) +
+  coord_flip() +
+  facet_wrap(~Métrica, scales = "free_x") +
+  scale_fill_manual(values = c(COR$neutra, COR$primaria), guide = "none") +
+  labs(x = NULL, y = NULL,
+       caption = "A RPA 4 lidera em contagem; em densidade, empata com a RPA 1.") +
+  tema_artigo()
+```
+
+**Achado.** A RPA 1 (Centro), com apenas `r fmt_n(rpa$area_km2[1],1)` km²,
+apresenta densidade de `r fmt_n(obs_rpa[1]/rpa$area_km2[1], 1)` pontos/km² —
+equivalente à RPA 4 (`r fmt_n(obs_rpa[4]/rpa$area_km2[4], 1)` pontos/km²), que o
+manuscrito identifica como a mais crítica. A RPA 3, segunda em contagem
+absoluta, é a **menos** densa (`r fmt_n(obs_rpa[3]/rpa$area_km2[3], 1)` pts/km²)
+por ser a maior em área.
+
+## Relação entre número de bairros e de pontos
+
+```{r}
+#| label: tbl-spearman-bairros
+#| tbl-cap: "Correlação entre número de bairros e número de pontos de descarte por RPA"
+
+sp <- cor.test(DADOS$bairros_por_rpa, as.numeric(obs_rpa), method = "spearman",
+               exact = FALSE)
+tibble::tibble(
+  `Coeficiente` = "Spearman (ρ)",
+  `ρ` = unname(sp$estimate), `S` = unname(sp$statistic),
+  `valor-p` = fmt_p(sp$p.value), n = 6,
+  `Conclusão` = "sem correlação estatisticamente significativa"
+) |> tab(digitos = 3)
+```
+
+O manuscrito afirma haver "baixa correlação" entre número de bairros e de pontos
+sem apresentar coeficiente. O teste formal indica ρ = `r fmt_n(sp$estimate, 2)`
+(p = `r fmt_p(sp$p.value)`): a redação correta é **"sem correlação
+significativa"**, e o poder é baixo por construção (n = 6 regiões).
+
+---
+
+# PARTE IV — Análise espacial {#sec-espacial}
+
+::: {.callout-note}
+Esta é a lacuna central apontada na revisão. Os testes qui-quadrado tratam
+distância como categoria, mas **não testam padrão espacial**: não distinguem
+1.308 pontos espalhados uniformemente de 1.308 pontos concentrados em um bairro.
+As análises a seguir testam diretamente a hipótese geográfica do trabalho.
+:::
+
+```{r}
+#| label: prep-espacial
+#| echo: false
+pts_unicos <- pts[!duplicated(sf::st_coordinates(pts)), ]
+```
+
+## Padrão de pontos: teste de aleatoriedade espacial
+
+```{r}
+#| label: tbl-ann
+#| tbl-cap: "Índice do vizinho mais próximo (Clark & Evans) com correção de borda de Donnelly"
+
+ann <- indice_vizinho_proximo(pts_unicos, sf::st_sf(geometry = DADOS$municipio))
+ann |> dplyr::mutate(`valor-p` = fmt_p(`valor-p`)) |> tab(digitos = 3)
+
+ann_R <- ann[["Índice R"]]
+ann_z <- ann[["z"]]
+```
+
+**Interpretação.** O índice R compara a distância média ao vizinho mais próximo
+observada com a esperada sob aleatoriedade completa (CSR). R = 1 indica
+aleatoriedade; R < 1, agregação; R > 1, dispersão. O valor obtido
+(**R = `r fmt_n(ann_R, 3)`**, z = `r fmt_n(ann_z, 1)`,
+p < 0,001) indica que os pontos estão, em média, a menos da metade da distância
+esperada por acaso: **padrão fortemente agregado**. A hipótese de que o descarte
+irregular se distribui aleatoriamente pelo território é rejeitada.
+
+## Agregação em múltiplas escalas (função L de Ripley)
+
+O índice R avalia apenas a escala do vizinho imediato. A função L de Ripley
+(transformação estabilizadora de variância da função K) testa agregação em
+**todas as escalas simultaneamente**, com envelope de Monte Carlo.
+
+```{r}
+#| label: fig-ripley
+#| fig-cap: "Função L de Ripley com envelope de 99 simulações sob aleatoriedade espacial completa. A curva observada (azul) permanece acima do envelope (faixa cinza) em toda a faixa analisada, indicando agregação significativa da escala de quarteirão à de bairro."
+#| fig-height: 4
+#| cache: true
+
+ripley <- funcao_k_ripley(pts_unicos, sf::st_sf(geometry = DADOS$municipio),
+                          n_sim = 99)
+pct_acima <- 100 * mean(ripley$obs > ripley$hi, na.rm = TRUE)
+
+ggplot(ripley, aes(x = r)) +
+  geom_ribbon(aes(ymin = lo - r, ymax = hi - r), fill = COR$grade) +
+  geom_line(aes(y = theo - r), colour = COR$neutra, linetype = "dashed") +
+  geom_line(aes(y = obs - r), colour = COR$primaria, linewidth = 0.9) +
+  labs(x = "Escala de análise r (m)", y = "L(r) − r",
+       caption = paste("Linha tracejada: esperado sob aleatoriedade completa (CSR).",
+                       "Faixa cinza: envelope de 99 simulações.")) +
+  tema_artigo()
+```
+
+A curva observada permanece **acima** do envelope em
+`r fmt_n(pct_acima, 0)`% das escalas avaliadas (0 a 3 km), confirmando que a
+agregação não é artefato da escala escolhida: há estrutura de clusters desde a
+escala de quarteirão até a de bairro.
+
+::: {.callout-note collapse="true"}
+## Nota técnica sobre a correção de borda
+
+A correção isotrópica de Ripley recalcula pesos de borda contra cada aresta da
+janela; com o contorno detalhado do município (incluindo linha de costa e
+ilhas) e 100 padrões simulados, o custo computacional é proibitivo. Adotou-se a
+**correção de borda por contagem reduzida** ("border"), que é consistente e
+substancialmente mais rápida, sobre uma versão simplificada do contorno
+(tolerância de 150 m). Como o envelope de Monte Carlo é gerado sob exatamente a
+mesma correção e a mesma janela, qualquer viés residual afeta igualmente a
+curva observada e as simuladas — a inferência permanece válida.
+:::
+
+## Os pontos estão mais próximos dos critérios do que o acaso? {#sec-csr}
+
+::: {.callout-important}
+## A pergunta que o objetivo do artigo realmente faz
+
+O manuscrito conclui que o risco é baixo porque a maioria dos pontos está
+distante dos critérios. Mas "distante" comparado a quê? O qui-quadrado de
+aderência usa como referência a hipótese de **classes de distância
+equiprováveis** — que não tem significado geográfico: a faixa de território a
+até 20 m de um rio é muitíssimo menor que a faixa além de 120 m, de modo que
+mesmo um descarte perfeitamente aleatório produziria "muitos pontos distantes".
+
+A referência correta é o **território**: se os resíduos fossem depositados em
+qualquer lugar de Recife, que distância mediana observaríamos? O teste abaixo
+constrói essa hipótese nula por simulação.
+:::
+
+```{r}
+#| label: tbl-csr
+#| tbl-cap: "Distância mediana observada versus esperada sob aleatoriedade espacial completa (999 repetições sobre população de referência de 20.000 pontos uniformes no município)"
+#| cache: true
+
+camadas_criterio <- list("Corpos hídricos" = DADOS$hidrico,
+                         "Unidades de saúde" = DADOS$saude,
+                         "Instituições de ensino" = DADOS$escolas)
+
+csr <- teste_proximidade_csr(pts, camadas_criterio,
+                             sf::st_sf(geometry = DADOS$municipio),
+                             n_sim = 999, n_ref = 20000)
+
+csr |> dplyr::mutate(`valor-p` = fmt_p(`valor-p`)) |> tab(digitos = 1)
+```
+
+**Resultado.** Os três critérios apresentam distância mediana observada
+**significativamente menor** que a esperada sob aleatoriedade (p < 0,001). Os
+pontos de descarte estão cerca de
+`r fmt_n(100 * (1 - csr[["Razão obs/esperada"]][1]), 0)`% mais próximos dos
+corpos hídricos,
+`r fmt_n(100 * (1 - csr[["Razão obs/esperada"]][2]), 0)`% mais próximos das
+unidades de saúde e
+`r fmt_n(100 * (1 - csr[["Razão obs/esperada"]][3]), 0)`% mais próximos das
+instituições de ensino do que estariam se distribuídos ao acaso pelo território.
+
+::: {.callout-warning}
+## Interpretação — e o que este resultado NÃO autoriza a concluir
+
+Este achado **não contradiz** a classificação de risco do manuscrito: continua
+verdadeiro que a maioria absoluta dos pontos está em classes de baixa
+pontuação. O que ele mostra é que a afirmação "os pontos estão afastados dos
+critérios" **não se sustenta quando a comparação é feita contra o território**.
+
+A explicação mais provável é **confundimento pela urbanização**: descarte
+irregular ocorre onde há ocupação, vias de acesso e obras — e é exatamente onde
+também se localizam escolas, unidades de saúde e a drenagem urbana canalizada.
+A proximidade observada reflete, em boa medida, essa coocorrência, e não
+necessariamente uma escolha deliberada de descartar perto desses equipamentos.
+
+Recomenda-se, portanto: (i) incluir o teste como evidência de que o padrão não
+é aleatório; (ii) declarar explicitamente a hipótese de confundimento urbano; e
+(iii) ajustar a redação das conclusões, substituindo "os pontos estão distantes
+dos critérios" por "a maioria dos pontos situa-se em classes de baixo escore,
+embora sistematicamente mais próxima dos critérios do que o esperado ao acaso".
+:::
+
+```{r}
+#| label: fig-csr
+#| fig-cap: "Distância mediana observada (linha laranja) frente à distribuição das medianas simuladas sob aleatoriedade espacial completa (barras azuis). Em nenhuma das 999 repetições o acaso produziu pontos tão próximos quanto os observados."
+#| fig-height: 3.6
+#| cache: true
+
+## Reconstrói a distribuição nula apenas para exibição
+set.seed(PARAMS$semente)
+ref <- sf::st_sf(geometry = sf::st_sample(sf::st_geometry(DADOS$municipio),
+                                          20000, type = "random"))
+nulos <- purrr::imap_dfr(camadas_criterio, function(cam, nome) {
+  d <- dist_min(ref, cam)
+  meds <- replicate(999, median(sample(d, nrow(pts), replace = TRUE)))
+  tibble::tibble(Critério = nome, mediana = meds)
+})
+observados <- tibble::tibble(Critério = csr$Critério,
+                             obs = csr[["Mediana observada (m)"]])
+
+ggplot(nulos, aes(x = mediana)) +
+  geom_histogram(bins = 40, fill = COR$primaria, colour = NA) +
+  geom_vline(data = observados, aes(xintercept = obs),
+             colour = COR$destaque, linewidth = 0.9) +
+  geom_text(data = observados, aes(x = obs, y = Inf, label = "observado"),
+            colour = COR$destaque, angle = 90, vjust = -0.4, hjust = 1.1, size = 2.9) +
+  facet_wrap(~Critério, scales = "free") +
+  labs(x = "Distância mediana (m)", y = "Repetições simuladas") +
+  tema_artigo()
+```
+
+## Autocorrelação espacial da densidade por bairro
+
+```{r}
+#| label: tbl-moran
+#| tbl-cap: "I de Moran global para a densidade de pontos por bairro (n = 94; contiguidade queen; pesos normalizados por linha)"
+#| cache: true
+
+mor <- moran_global(bairros$densidade, bairros)
+mor$resumo |>
+  dplyr::mutate(dplyr::across(dplyr::starts_with("p ("), fmt_p)) |>
+  tab(digitos = 4)
+
+moran_I  <- mor$resumo[["I de Moran"]]
+moran_E  <- mor$resumo[["E[I] sob H0"]]
+moran_p  <- mor$resumo[["p (permutação)"]]
+```
+
+**Interpretação.** O I de Moran mede se bairros vizinhos apresentam densidades
+semelhantes. O valor observado
+(**I = `r fmt_n(moran_I, 3)`**) é muito superior ao esperado
+sob ausência de autocorrelação (E[I] = `r fmt_n(moran_E, 4)`),
+com p = `r fmt_p(moran_p)` em
+`r PARAMS$n_perm` permutações. Há **autocorrelação espacial positiva
+significativa**: o descarte irregular forma clusters geográficos coerentes, não
+ocorrências isoladas.
+
+Reportamos os dois procedimentos inferenciais — analítico (sob suposição de
+aleatorização) e por permutação — porque o primeiro depende de suposições
+distribucionais que a densidade assimétrica não satisfaz; a concordância entre
+eles reforça a conclusão.
+
+## Localização dos clusters (Getis-Ord Gi*)
+
+```{r}
+#| label: tbl-gi
+#| tbl-cap: "Bairros classificados como hot spots pelo Gi* (valores-p corrigidos por FDR)"
+#| cache: true
+
+gi <- getis_ord(bairros$densidade, bairros, bairros$EBAIRRNOME)
+gi_hot <- gi |> dplyr::filter(grepl("hot", Classificação))
+
+gi_hot |>
+  dplyr::mutate(Unidade = stringr::str_to_title(Unidade),
+                `valor-p` = fmt_p(`valor-p`),
+                `p ajustado (FDR)` = fmt_p(`p ajustado (FDR)`)) |>
+  dplyr::rename(Bairro = Unidade, `Densidade (pts/km²)` = Valor) |>
+  tab(digitos = 2)
+```
+
+Foram identificados **`r nrow(gi_hot)` bairros** como *hot spots* após correção
+para testes múltiplos pelo procedimento de Benjamini-Hochberg (FDR) — controle
+necessário porque 94 testes simultâneos produziriam falsos positivos por acaso.
+Sem essa correção, `r sum(gi[["Gi* (z)"]] >= 1.96)` bairros seriam declarados
+significativos; o reporte conservador é o recomendado.
+
+```{r}
+#| label: fig-mapa
+#| fig-cap: "Densidade de pontos de descarte por bairro e localização dos hot spots (contorno laranja). Linhas cinza-escuras delimitam as RPAs. O cluster principal atravessa a fronteira entre a RPA 4 e a RPA 1."
+#| fig-height: 7.5
+
+bairros_plot <- bairros
+bairros_plot$hot <- gi$Classificação[match(bairros$EBAIRRNOME, gi$Unidade)]
+
+ggplot() +
+  geom_sf(data = bairros_plot, aes(fill = densidade), colour = "white",
+          linewidth = 0.15) +
+  geom_sf(data = dplyr::filter(bairros_plot, grepl("hot", hot)),
+          fill = NA, colour = COR$destaque, linewidth = 0.8) +
+  geom_sf(data = rpa, fill = NA, colour = "#555555", linewidth = 0.5) +
+  scale_fill_gradientn(colours = COR$sequencial,
+                       name = "Pontos por km²",
+                       labels = scales::label_number(decimal.mark = ",")) +
+  labs(caption = "Contorno laranja: hot spot significativo (Gi*, FDR < 0,05).") +
+  theme_void(base_size = 10) +
+  theme(legend.position = "right",
+        plot.background = element_rect(fill = "white", colour = NA),
+        legend.text = element_text(colour = "#333333"),
+        legend.title = element_text(colour = "#333333"),
+        plot.caption = element_text(colour = COR$neutra, hjust = 0, size = 8))
+```
+
+## Superfície de densidade Kernel
+
+```{r}
+#| label: fig-kernel
+#| fig-cap: "Densidade Kernel dos pontos de descarte irregular (largura de banda de 500 m), recortada ao território municipal. Diferentemente do mapa por bairro, a superfície contínua não depende dos limites administrativos e revela a extensão real do núcleo de concentração."
+#| fig-height: 7.5
+#| cache: true
+
+kde <- densidade_kernel(pts, sf::st_sf(geometry = DADOS$municipio),
+                        sigma = 500, resolucao = 300)
+
+ggplot() +
+  geom_raster(data = kde, aes(x = x, y = y, fill = densidade)) +
+  geom_sf(data = rpa, fill = NA, colour = "white", linewidth = 0.45) +
+  scale_fill_gradientn(colours = COR$sequencial, name = "Pontos por km²",
+                       labels = scales::label_number(decimal.mark = ",")) +
+  coord_sf(expand = FALSE) +
+  labs(caption = "Largura de banda: 500 m. Linhas brancas: limites das RPAs.") +
+  theme_void(base_size = 10) +
+  theme(legend.position = "right",
+        plot.background = element_rect(fill = "white", colour = NA),
+        legend.text = element_text(colour = "#333333"),
+        legend.title = element_text(colour = "#333333"),
+        plot.caption = element_text(colour = COR$neutra, hjust = 0, size = 8))
+```
+
+A superfície Kernel foi solicitada na revisão e cumpre função distinta da do
+mapa coroplético: por não depender dos limites de bairro, ela mostra que o
+núcleo de concentração é **um só**, contínuo, e que sua extensão real é
+seccionada tanto pelas fronteiras de bairro quanto pelas de RPA.
+
+**Achado com implicação para o desenho do estudo.** Os *hot spots* formam um
+cinturão **contíguo** — `r paste(stringr::str_to_title(gi_hot$Unidade), collapse = ", ")` —
+que atravessa a divisa entre RPA 4 e RPA 1. Isso indica que a RPA —
+unidade administrativa adotada no manuscrito — **secciona artificialmente** o
+fenômeno: a escala geográfica real do problema é o bairro. Recomenda-se que a
+discussão incorpore essa leitura e que as recomendações de política sejam
+direcionadas ao cinturão identificado, não a regiões administrativas inteiras.
+
+---
+
+# PARTE V — Escore de risco ambiental {#sec-risco}
+
+## Construção e distribuição do escore
+
+O escore final Sf é a soma dos escores parciais de proximidade a unidades de
+saúde (Ss), instituições de ensino (Se) e recursos hídricos (Sr), conforme a
+Equação 1 e os cortes da Tabela 1 do manuscrito.
+
+```{r}
+#| label: tbl-sf-desc
+#| tbl-cap: "Estatística descritiva do escore de risco Sf e de seus componentes"
+
+dplyr::bind_rows(
+  descrever(pts$Ss, "Ss — unidades de saúde"),
+  descrever(pts$Se, "Se — instituições de ensino"),
+  descrever(pts$Sr, "Sr — recursos hídricos"),
+  descrever(pts$Sf, "Sf — escore final")
+) |>
+  dplyr::select(Variável, n, Média, DP, Mediana, Q1, Q3, Mínimo, Máximo,
+                Assimetria, Curtose) |>
+  tab(digitos = 2)
+```
+
+```{r}
+#| label: tbl-sf-classes
+#| tbl-cap: "Classificação de risco dos pontos de descarte (Tabela 2 do manuscrito)"
+
+tibble::tibble(Classe = names(table(pts$classe_risco)),
+               n = as.integer(table(pts$classe_risco))) |>
+  dplyr::mutate(`%` = 100 * n / sum(n),
+                `IC95 inf (%)` = purrr::map_dbl(n, ~ ic_wilson(.x, nrow(pts))[1]),
+                `IC95 sup (%)` = purrr::map_dbl(n, ~ ic_wilson(.x, nrow(pts))[2])) |>
+  tab(digitos = 2)
+```
+
+::: {.callout-warning}
+## Duas métricas distintas — não confundir
+
+O manuscrito afirma que "93% da área de Recife é de Classe I". Esse percentual
+refere-se à **área do município**. A tabela acima refere-se ao **percentual de
+pontos de descarte** em cada classe
+(`r fmt_n(100*mean(pts$classe_risco == PARAMS$classes_sf[1]),1)`% em Classe I).
+As duas métricas são válidas e respondem a perguntas diferentes; o texto final
+deve explicitar qual está sendo reportada em cada passagem.
+:::
+
+## Os três critérios são independentes? Verificação de redundância
+
+A Equação 1 **soma** os três escores parciais. Somar componentes que medem o
+mesmo fenômeno equivaleria a atribuir peso extra a ele sem que isso fosse
+declarado. A verificação abaixo não constava do manuscrito e antecipa uma
+crítica metodológica previsível.
+
+```{r}
+#| label: tbl-redundancia
+#| tbl-cap: "Correlação de Spearman entre as distâncias aos três critérios"
+
+correlacao_criterios(sf::st_drop_geometry(pts),
+                     c("d_agua", "d_saude", "d_escola"),
+                     c("Corpos hídricos", "Unidades de saúde", "Instituições de ensino")) |>
+  dplyr::mutate(`valor-p` = fmt_p(`valor-p`)) |>
+  tab(digitos = 3)
+```
+
+```{r}
+#| label: tbl-redundancia-escores
+#| tbl-cap: "Correlação de Spearman entre os escores parciais que compõem Sf"
+
+correlacao_criterios(sf::st_drop_geometry(pts), c("Sr", "Ss", "Se"),
+                     c("Sr (hídricos)", "Ss (saúde)", "Se (ensino)")) |>
+  dplyr::mutate(`valor-p` = fmt_p(`valor-p`)) |>
+  tab(digitos = 3)
+```
+
+**Resultado favorável ao modelo.** As correlações são desprezíveis a fracas
+(|ρ| ≤ 0,15; variância compartilhada inferior a 3% em todos os pares). Os três
+critérios capturam dimensões **efetivamente distintas** da exposição, o que
+**valida a estrutura aditiva da Equação 1**: não há dupla contagem do mesmo
+fenômeno. Este é um argumento positivo a favor do modelo que o manuscrito ainda
+não apresenta e que convém incluir na resposta aos revisores.
+
+## Comparação do risco entre RPAs
+
+```{r}
+#| label: tbl-kw
+#| tbl-cap: "Comparação do escore de risco Sf entre as seis RPAs"
+
+comp_rpa <- comparar_grupos(pts$Sf, paste("RPA", pts$RPA))
+comp_rpa$resumo |> dplyr::mutate(`valor-p` = fmt_p(`valor-p`)) |> tab(digitos = 3)
+
+eps2_rpa <- attr(comp_rpa$resumo, "eps2")
+H_rpa    <- comp_rpa$resumo$Estatística[1]
+```
+
+Aplicou-se o **Kruskal-Wallis** por se tratar de variável ordinal e assimétrica
+(ver @sec-descritiva). A **ANOVA de Welch** é reportada como verificação
+convergente: não assume variâncias homogêneas e chega à mesma conclusão, o que
+descarta a possibilidade de o resultado ser artefato da escolha do teste.
+
+```{r}
+#| label: tbl-sf-rpa
+#| tbl-cap: "Escore de risco por RPA"
+
+comp_rpa$descritiva |> tab(digitos = 2)
+```
+
+```{r}
+#| label: tbl-dunn
+#| tbl-cap: "Comparações múltiplas pelo teste de Dunn com correção de Bonferroni (apenas contrastes significativos)"
+
+comp_rpa$dunn |>
+  dplyr::filter(`p ajustado (Bonferroni)` < PARAMS$alfa) |>
+  dplyr::mutate(dplyr::across(dplyr::starts_with("p "), fmt_p)) |>
+  tab(digitos = 3)
+```
+
+```{r}
+#| label: fig-sf-rpa
+#| fig-cap: "Distribuição do escore de risco Sf por RPA. Linhas horizontais marcam os limites entre classes de risco. As RPAs 4 e 5 apresentam escores individuais significativamente menores, apesar de a RPA 4 concentrar o maior número absoluto de pontos."
+#| fig-height: 4.2
+
+ggplot(sf::st_drop_geometry(pts), aes(x = factor(RPA), y = Sf)) +
+  geom_hline(yintercept = c(7.5, 15, 22.5), colour = COR$grade, linewidth = 0.5) +
+  geom_boxplot(fill = COR$primaria, colour = COR$neutra, width = 0.55,
+               outlier.size = 0.6, outlier.alpha = 0.3, staplewidth = 0.3) +
+  stat_summary(fun = mean, geom = "point", shape = 18, size = 2.4,
+               colour = COR$destaque) +
+  annotate("text", x = 6.45, y = c(7.5, 15, 22.5) + 0.7, hjust = 1, size = 2.8,
+           colour = COR$neutra,
+           label = c("limite Classe I", "limite Classe II", "limite Classe III")) +
+  labs(x = "Região Político-Administrativa", y = "Escore final de risco (Sf)",
+       caption = sprintf("Kruskal-Wallis: H = %s; gl = %d; p < 0,001; ε² = %s.",
+                         fmt_n(H_rpa, 2), comp_rpa$resumo$gl[1],
+                         fmt_n(eps2_rpa, 3))) +
+  tema_artigo()
+```
+
+**Achado contraintuitivo e relevante para a discussão.** A RPA 4 concentra o
+maior número absoluto de pontos, mas seus pontos têm escore de risco
+**significativamente menor** que os das RPAs 1, 3 e 6. Ou seja: na RPA 4 há
+*muitos* descartes, porém em locais mais afastados dos critérios sensíveis; no
+Centro (RPA 1) há *menos* descartes, porém mais próximos de equipamentos
+públicos e corpos hídricos. Quantidade e gravidade são dimensões distintas do
+problema e demandam respostas de política distintas.
+
+O tamanho de efeito (ε² = `r fmt_n(eps2_rpa, 3)`)
+é **pequeno**: a RPA explica pouco da variabilidade do risco individual —
+coerente com o achado de que a escala relevante é o bairro (@sec-espacial).
+
+---
+
+# PARTE VI — Análises de robustez e complementares {#sec-robustez}
+
+::: {.callout-note}
+Análises de robustez verificam se as conclusões sobrevivem a escolhas
+metodológicas defensáveis porém arbitrárias. São o principal antídoto à crítica
+de que os resultados dependem de decisões dos autores.
+:::
+
+## Intervalos de confiança por bootstrap
+
+```{r}
+#| label: tbl-bootstrap
+#| tbl-cap: "Intervalos de confiança bootstrap (5.000 reamostras) para as medianas das distâncias"
+#| cache: true
+
+set.seed(PARAMS$semente)
+dplyr::bind_rows(
+  dplyr::mutate(bootstrap_ic(pts$d_agua),   Variável = "Corpos hídricos", .before = 1),
+  dplyr::mutate(bootstrap_ic(pts$d_saude),  Variável = "Unidades de saúde", .before = 1),
+  dplyr::mutate(bootstrap_ic(pts$d_escola), Variável = "Instituições de ensino", .before = 1),
+  dplyr::mutate(bootstrap_ic(pts$Sf, estatistica = mean), Variável = "Escore Sf (média)", .before = 1)
+) |> tab(digitos = 2)
+```
+
+Como as distribuições são assimétricas, o intervalo **BCa** (corrigido para viés
+e aceleração) é o reporte preferencial. A proximidade entre os limites percentil
+e BCa indica que o viés de reamostragem é pequeno, e a estreiteza dos intervalos
+confirma que as medianas são estimadas com boa precisão.
+
+## Sensibilidade do modelo de risco aos pesos {#sec-sensibilidade}
+
+::: {.callout-important}
+## Resposta direta à crítica sobre a arbitrariedade dos pesos
+
+A revisão questionou por que 20 m recebe 10 pontos (e não 8 ou 12) e por que os
+três critérios têm peso igual na Equação 1. Em vez de justificar os pesos *a
+posteriori*, testamos se a **conclusão** do estudo muda quando eles mudam.
+:::
+
+```{r}
+#| label: tbl-sensibilidade
+#| tbl-cap: "Análise de sensibilidade: classificação de risco sob diferentes esquemas de ponderação"
+
+cenarios <- list(
+  "Original (pesos iguais, escada 10/7,5/5/2,5/0,5)" = list(w = c(1,1,1), escores = PARAMS$escores),
+  "Escada linear (10/8/6/4/2)"                        = list(w = c(1,1,1), escores = c(10,8,6,4,2)),
+  "Escada exponencial (10/5/2,5/1,25/0,5)"            = list(w = c(1,1,1), escores = c(10,5,2.5,1.25,0.5)),
+  "Água com peso dobrado"                             = list(w = c(1,1,2), escores = PARAMS$escores),
+  "Saúde com peso dobrado"                            = list(w = c(2,1,1), escores = PARAMS$escores),
+  "Ensino com peso dobrado"                           = list(w = c(1,2,1), escores = PARAMS$escores),
+  "Água +50%"                                         = list(w = c(1,1,1.5), escores = PARAMS$escores),
+  "Água −50%"                                         = list(w = c(1,1,0.5), escores = PARAMS$escores)
+)
+sens <- sensibilidade_pesos(pts, cenarios)
+tab(sens, digitos = 2)
+
+## Faixa de variação da Classe I quando se altera apenas o peso entre critérios
+sens_pesos    <- sens[["Classe I (%)"]][!grepl("Escada", sens$Cenário)]
+sens_min      <- min(sens_pesos)
+sens_max      <- max(sens_pesos)
+sens_linear   <- sens[["Classe I (%)"]][sens$Cenário == "Escada linear (10/8/6/4/2)"]
+```
+
+```{r}
+#| label: fig-sensibilidade
+#| fig-cap: "Percentual de pontos classificados como baixo risco (Classe I) sob cada esquema de ponderação. A conclusão é robusta à variação dos pesos entre critérios, mas sensível à forma da escada de pontuação."
+#| fig-height: 4
+
+sens |>
+  dplyr::mutate(tipo = dplyr::if_else(grepl("Escada", Cenário),
+                                      "Altera a escada de pontuação",
+                                      "Altera o peso entre critérios")) |>
+  ggplot(aes(x = reorder(Cenário, `Classe I (%)`), y = `Classe I (%)`, fill = tipo)) +
+  geom_col(width = 0.68) +
+  geom_text(aes(label = fmt_n(`Classe I (%)`, 1)), hjust = -0.15, size = 3,
+            colour = "#333333") +
+  coord_flip(ylim = c(0, 105)) +
+  scale_fill_manual(values = c(COR$destaque, COR$primaria), name = NULL) +
+  labs(x = NULL, y = "% de pontos em Classe I (baixo risco)") +
+  tema_artigo()
+```
+
+**Conclusão da análise de sensibilidade.** Alterar o peso relativo entre
+critérios — inclusive dobrar o peso da água, o critério mais crítico — mantém a
+Classe I entre `r fmt_n(sens_min, 0)`% e `r fmt_n(sens_max, 0)`%: a
+conclusão de predomínio de baixo risco é **robusta à ponderação**. Já a
+substituição da escada de pontuação por uma progressão linear reduz a Classe I
+para `r fmt_n(sens_linear, 1)`%.
+
+::: {.callout-tip}
+## Recomendação de redação
+
+O aspecto sensível do modelo **não são os pesos entre critérios** (que o revisor
+questionou), **mas a forma da escada de pontuação** (que ninguém questionou).
+Recomenda-se: (i) apresentar esta análise de sensibilidade como seção de
+robustez; (ii) declarar explicitamente que a escada decrescente adotada segue
+Paz et al. (2020); e (iii) reconhecer, nas limitações, que uma progressão linear
+produziria classificação mais conservadora.
+:::
+
+## Sensibilidade à decisão sobre coordenadas duplicadas {#sec-robustez-dup}
+
+```{r}
+#| label: tbl-robustez-dup
+#| tbl-cap: "Comparação dos principais resultados com e sem coordenadas duplicadas"
+
+resumo_versao <- function(dados, rotulo) {
+  tibble::tibble(
+    Versão = rotulo, n = nrow(dados),
+    `Mediana d. água (m)` = median(dados$d_agua),
+    `Mediana d. saúde (m)` = median(dados$d_saude),
+    `Sf médio` = mean(dados$Sf),
+    `Classe I (%)` = 100 * mean(dados$classe_risco == PARAMS$classes_sf[1]),
+    `≤ 20 m de água (%)` = 100 * mean(dados$d_agua <= 20)
+  )
+}
+dplyr::bind_rows(
+  resumo_versao(sf::st_drop_geometry(pts), "Completa (com duplicatas)"),
+  resumo_versao(sf::st_drop_geometry(pts_unicos), "Apenas locais únicos")
+) |> tab(digitos = 2)
+```
+
+As diferenças são de pequena magnitude em todos os indicadores, o que indica que
+**a decisão sobre as duplicatas não compromete as conclusões** — embora deva ser
+documentada no artigo por transparência.
+
+## Sensibilidade ao procedimento de limpeza das coordenadas
+
+```{r}
+#| label: tbl-robustez-limpeza
+#| tbl-cap: "Comparação entre a base corrigida e a base restrita apenas a coordenadas originalmente válidas"
+
+sem_correcao <- sf::st_drop_geometry(pts[pts$correcao == "sem correção", ])
+dplyr::bind_rows(
+  resumo_versao(sf::st_drop_geometry(pts), "Corrigida (análise principal)"),
+  resumo_versao(sem_correcao, "Apenas originalmente válidas")
+) |> tab(digitos = 2)
+```
+
+Os resultados praticamente não se alteram, confirmando que as correções
+tipográficas **recuperam informação sem introduzir viés** — os pontos corrigidos
+comportam-se como os demais.
+
+## Análise inferencial da distribuição por renda {#sec-renda-inf}
+
+```{r}
+#| label: tbl-renda-chi
+#| tbl-cap: "Teste de aderência da distribuição dos pontos entre faixas de renda"
+
+renda_valida <- DADOS$renda |> dplyr::filter(faixa != "Sem dados", n > 0)
+gof_renda <- qui_aderencia(setNames(renda_valida$n, as.character(renda_valida$faixa)),
+                           rotulo = "Distribuição entre faixas de renda")
+gof_renda$resumo |> dplyr::mutate(`valor-p` = fmt_p(`valor-p`)) |> tab(digitos = 2)
+```
+
+```{r}
+#| label: tbl-renda-residuos
+#| tbl-cap: "Resíduos padronizados por faixa de renda"
+
+gof_renda$detalhe |> tab(digitos = 2)
+```
+
+```{r}
+#| label: fig-renda
+#| fig-cap: "Distribuição dos pontos de descarte por faixa de renda domiciliar. A concentração nas faixas intermediárias e baixas sustenta a discussão de justiça ambiental."
+#| fig-height: 3.8
+
+renda_valida |>
+  dplyr::mutate(pct = 100 * n / sum(n)) |>
+  ggplot(aes(x = faixa, y = pct)) +
+  geom_col(fill = COR$primaria, width = 0.68) +
+  geom_text(aes(label = fmt_n(pct, 1)), vjust = -0.5, size = 2.9, colour = "#333333") +
+  labs(x = "Faixa de renda domiciliar (R$)", y = "% dos pontos de descarte") +
+  tema_artigo() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1))
+```
+
+::: {.callout-warning}
+## Limitação desta análise
+
+O teste compara as contagens observadas com uma distribuição uniforme entre
+faixas, mas **não há denominador**: não se sabe quantos domicílios ou que
+extensão territorial cada faixa de renda ocupa. Portanto o resultado descreve
+**concentração absoluta**, não taxa per capita. Para afirmar desigualdade
+ambiental é necessário cruzar renda por bairro (Censo 2022) com a densidade por
+bairro já calculada — análise viável com o arquivo `bairros_stats.csv` gerado.
+:::
+
+## Ecoestações: cobertura da rede {#sec-eco}
+
+```{r}
+#| label: tbl-eco
+#| tbl-cap: "Distância dos pontos de descarte à ecoestação mais próxima que recebe RCD"
+
+tibble::tibble(
+  Indicador = c("Distância mediana (m)", "Distância média (m)",
+                "Pontos a ≤ 500 m (%)", "Pontos a ≤ 1.000 m (%)",
+                "Pontos a ≤ 2.000 m (%)", "Ecoestações que recebem RCD (n)"),
+  Valor = c(median(pts$d_eco), mean(pts$d_eco),
+            100 * mean(pts$d_eco <= 500), 100 * mean(pts$d_eco <= 1000),
+            100 * mean(pts$d_eco <= 2000), nrow(DADOS$eco_rcc))
+) |> tab(digitos = 1)
+```
+
+```{r}
+#| label: tbl-eco-corr
+#| tbl-cap: "Correlação entre número de equipamentos de entrega voluntária e número de pontos de descarte, por RPA"
+
+eco_rpa <- DADOS$eco_todos
+eco_rpa$RPA <- rpa$RPA[sf::st_nearest_feature(eco_rpa, rpa)]
+n_eco <- as.integer(table(factor(eco_rpa$RPA, levels = 1:6)))
+sp_eco <- cor.test(n_eco, as.numeric(obs_rpa), method = "spearman", exact = FALSE)
+
+tibble::tibble(
+  RPA = 1:6, `Equipamentos` = n_eco, `Pontos de descarte` = as.integer(obs_rpa)
+) |> tab()
+```
+
+Spearman ρ = `r fmt_n(sp_eco$estimate, 3)`; p = `r fmt_p(sp_eco$p.value)` (n = 6,
+análise exploratória — poder muito baixo).
+
+::: {.callout-important}
+## Reinterpretação necessária no manuscrito
+
+A distância mediana de `r fmt_n(median(pts$d_eco), 0)` m e o fato de apenas
+`r fmt_n(100 * mean(pts$d_eco <= 1000), 1)`% dos pontos estarem a menos de 1 km de
+uma ecoestação indicam **déficit de cobertura da rede**, e não apenas falha de
+educação ambiental. O manuscrito sugere que a coincidência entre a RPA 4 ter
+mais pontos e mais ecoestações demandaria "programas de educação ambiental"; os
+dados apontam que a recomendação deve incluir **expansão e redistribuição da
+rede de recebimento**.
+:::
+
+---
+
+# Limitações {#sec-limitacoes}
+
+```{r}
+#| label: tbl-limitacoes
+#| tbl-cap: "Limitações do estudo e seu efeito sobre a interpretação"
+#| echo: false
+
+tibble::tribble(
+  ~Limitação, ~`Efeito sobre os resultados`, ~`Mitigação adotada`,
+  "Delineamento transversal", "Não capta dinâmica temporal do descarte nem efeito de intervenções", "Declarada; recomenda-se monitoramento longitudinal",
+  "Camadas de equipamentos públicos", "Análises de distância usaram camadas oficiais, não as originais do estudo", "Documentado; pipeline pronto para substituição imediata",
+  "Ausência de denominador socioeconômico", "Análise de renda mede concentração, não taxa per capita", "Explicitado em @sec-renda-inf",
+  "Pesos do modelo de risco", "Escolha metodológica não validada por especialistas", "Análise de sensibilidade em @sec-sensibilidade",
+  "Coordenadas duplicadas", "Ambiguidade sobre repetição legítima vs. dupla digitação", "Teste de robustez em @sec-robustez-dup",
+  "Falácia ecológica", "Associações em nível de bairro não se transferem a indivíduos", "Interpretação mantida em nível agregado",
+  "Confundimento urbano no teste CSR", "Proximidade pode refletir coocorrência com a mancha urbana, não escolha de local", "Declarada em @sec-csr; exigiria modelo ajustado por densidade construída",
+  "Distância euclidiana", "Não considera barreiras físicas nem rede viária", "Adequada ao objetivo (exposição ambiental, não deslocamento)"
+) |> tab()
+```
+
+# Reprodutibilidade {#sec-repro}
+
+```{r}
+#| label: sessao
+#| echo: false
+
+info <- sessionInfo()
+tibble::tibble(
+  Item = c("Versão do R", "Sistema operacional", "Sistema de referência",
+           "Semente aleatória", "Permutações (Moran)", "Reamostras (bootstrap)",
+           "Data de processamento"),
+  Valor = c(info$R.version$version.string, info$running,
+            "SIRGAS 2000 / UTM 25S (EPSG:31985)",
+            as.character(PARAMS$semente), as.character(PARAMS$n_perm), "5.000",
+            format(Sys.Date(), "%d/%m/%Y"))
+) |> tab()
+```
+
+```{r}
+#| label: tbl-pacotes
+#| tbl-cap: "Pacotes utilizados e respectivas versões"
+#| echo: false
+
+pk <- c("sf", "spdep", "spatstat.explore", "moments", "nortest", "FSA",
+        "DescTools", "dplyr", "ggplot2", "knitr")
+tibble::tibble(Pacote = pk,
+               Versão = vapply(pk, function(p) as.character(packageVersion(p)), character(1)),
+               Finalidade = c("Operações geoespaciais vetoriais",
+                              "Autocorrelação espacial (Moran, Getis-Ord)",
+                              "Padrão de pontos (função K/L de Ripley)",
+                              "Assimetria e curtose",
+                              "Testes de normalidade (AD, Lilliefors)",
+                              "Teste de Dunn para comparações múltiplas",
+                              "Estatísticas descritivas auxiliares",
+                              "Manipulação de dados",
+                              "Gráficos",
+                              "Geração do relatório")) |>
+  tab()
+```
+
+**Arquivos do projeto**
+
+| Arquivo | Conteúdo |
+|---|---|
+| `00_setup.R` | Ambiente, parâmetros globais e funções de formatação |
+| `01_dados.R` | Leitura, auditoria, limpeza e integração espacial |
+| `02_analises.R` | Rotinas estatísticas (uma função por método) |
+| `relatorio.qmd` | Este documento |
+| `renderizar.R` | Script de renderização |
+
+Para reproduzir integralmente: execute `renderizar.R`. O cache
+(`_dados_cache.rds`) pode ser apagado para forçar o reprocessamento completo,
+que leva cerca de cinco minutos.
+
+---
+
+# Recomendações para o manuscrito {#sec-recomendacoes}
+
+```{r}
+#| label: tbl-recomendacoes
+#| tbl-cap: "Ações recomendadas, por prioridade"
+#| echo: false
+
+tibble::tribble(
+  ~Prioridade, ~Ação, ~Seção,
+  "Alta", "Corrigir área e população da RPA 1 na caracterização da área", "@sec-auditoria",
+  "Alta", "Substituir o qui-quadrado por RPA pela versão proporcional à área", "@sec-rpa",
+  "Alta", "Incluir a seção de análise espacial (R, Moran, Gi*, Kernel) nos resultados", "@sec-espacial",
+  "Alta", "Ajustar a redação sobre 'afastamento' à luz do teste contra o território", "@sec-csr",
+  "Alta", "Acrescentar tamanhos de efeito (Cohen's w, V de Cramér) ao reporte", "@sec-inferencia",
+  "Alta", "Incluir a análise de sensibilidade como resposta à crítica dos pesos", "@sec-sensibilidade",
+  "Alta", "Reescrever 'baixa correlação' como 'sem correlação significativa'", "@sec-rpa",
+  "Média", "Incluir a tabela de descritivas das distâncias", "@sec-descritiva",
+  "Média", "Cumprir a promessa metodológica de análise por renda", "@sec-renda-inf",
+  "Média", "Reinterpretar o achado das ecoestações como déficit de cobertura", "@sec-eco",
+  "Média", "Explicitar a distinção entre % de área e % de pontos", "@sec-risco",
+  "Baixa", "Remover o parágrafo duplicado e renumerar as duas 'Table X2'", "—",
+  "Baixa", "Reportar gl = 8 no teste de independência", "@sec-inferencia"
+) |> tab()
+```

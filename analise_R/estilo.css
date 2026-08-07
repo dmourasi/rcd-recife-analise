@@ -1,0 +1,137 @@
+/* -----------------------------------------------------------------------------
+   Estilo do relatório — tipografia de leitura longa e tabelas científicas.
+
+   IMPORTANTE: este arquivo NÃO define cor de texto nem de fundo no corpo.
+   Os temas claro/escuro são controlados pelo Quarto (chave `theme` no YAML),
+   que troca fundo e texto de forma coordenada. Definir cor aqui quebraria o
+   contraste em um dos modos — era a causa do texto ilegível na versão anterior.
+   Onde uma cor é necessária, usamos as variáveis do Bootstrap, que o Quarto
+   redefine em cada tema.
+   -------------------------------------------------------------------------- */
+
+body {
+  font-size: 16px;
+  line-height: 1.65;
+}
+
+/* Largura de linha confortável para leitura contínua */
+main.content {
+  max-width: 60rem;
+}
+
+/* ---------- Hierarquia de títulos ---------- */
+
+h1 {
+  font-size: 1.7rem;
+  font-weight: 600;
+  margin-top: 2.8rem;
+  padding-bottom: 0.35rem;
+  border-bottom: 2px solid var(--bs-primary, #2a78d6);
+}
+
+h2 {
+  font-size: 1.26rem;
+  font-weight: 600;
+  margin-top: 2rem;
+}
+
+h3 {
+  font-size: 1.06rem;
+  font-weight: 600;
+  margin-top: 1.5rem;
+}
+
+/* ---------- Tabelas ---------- */
+
+table {
+  font-variant-numeric: tabular-nums;   /* dígitos alinham em colunas */
+  font-size: 0.94em;
+}
+
+.table > thead {
+  border-bottom: 1.5px solid currentColor;
+}
+
+.table > thead th {
+  font-weight: 600;
+  font-size: 0.92em;
+  border-bottom: none;
+  vertical-align: bottom;
+}
+
+.table td,
+.table th {
+  padding: 0.38rem 0.7rem;
+}
+
+caption,
+.table caption {
+  caption-side: top;
+  font-size: 0.94em;
+  font-weight: 600;
+  padding-bottom: 0.55rem;
+  text-align: left;
+  color: inherit;            /* herda o texto do tema, não uma cor fixa */
+}
+
+/* Tabelas largas rolam dentro do próprio bloco, sem estourar a página */
+.kable_wrapper,
+.table-responsive,
+.cell-output-display {
+  overflow-x: auto;
+}
+
+/* ---------- Figuras ---------- */
+
+figure {
+  margin: 1.8rem 0;
+}
+
+figcaption {
+  font-size: 0.88em;
+  line-height: 1.5;
+  padding-top: 0.6rem;
+  opacity: 0.85;             /* recua sem perder contraste em qualquer tema */
+}
+
+/* ---------- Blocos de destaque ---------- */
+
+div.callout {
+  margin: 1.6rem 0;
+}
+
+div.callout .callout-title {
+  font-weight: 600;
+}
+
+/* ---------- Código ---------- */
+
+details > summary,
+.code-fold summary {
+  font-size: 0.88em;
+  opacity: 0.8;
+}
+
+pre code {
+  font-size: 0.82em;
+  line-height: 1.5;
+}
+
+/* ---------- Sumário lateral ---------- */
+
+#TOC,
+nav[role="doc-toc"] {
+  font-size: 0.88rem;
+}
+
+nav[role="doc-toc"] ul > li > a.active {
+  font-weight: 600;
+}
+
+/* ---------- Impressão ---------- */
+
+@media print {
+  h1 { page-break-before: always; }
+  h1:first-of-type { page-break-before: avoid; }
+  figure, table { page-break-inside: avoid; }
+}

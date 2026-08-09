@@ -1227,6 +1227,24 @@ Consequência prática: **o ajuste do teste CSR pela densidade construída
 como limitação em vez de controlado.
 :::
 
+::: {.callout-note collapse="true"}
+## Verificação de plausibilidade da camada de assentamentos precários
+
+A soma da população residente nos `r sum(bd$n_assentamentos)` assentamentos
+é de `r format(sum(bd$pop_precaria), big.mark = ".", decimal.mark = ",")`
+pessoas — cerca de `r fmt_n(100 * sum(bd$pop_precaria) / 1488920, 0)`% da
+população de Recife. É um valor alto, mas compatível com a definição **ampla**
+adotada pelo cadastro municipal, que reúne favelas, cortiços e loteamentos
+irregulares (e não apenas favelas). Três bairros aparecem com 100% da área em
+assentamento precário (`r paste(stringr::str_to_title(bd$EBAIRRNOME[bd$pct_precario > 99.9]), collapse = ", ")`),
+o que é plausível para áreas de urbanização integralmente informal.
+
+A agregação por bairro foi validada contra um recálculo independente, geometria
+a geometria: diferença máxima de zero. A população, porém, é atribuída pelo
+**centroide** de cada assentamento, de modo que assentamentos a cavaleiro de
+dois bairros são contados inteiramente no bairro do centroide.
+:::
+
 ### Renda: por que não entrou no modelo
 
 O Cadastro Único do portal traz renda familiar, mas **sem bairro nem
@@ -1266,6 +1284,37 @@ mc$coeficientes |> dplyr::mutate(`valor-p` = fmt_p(`valor-p`)) |> tab(digitos = 
 ```
 
 ```{r}
+#| label: tbl-contagem-diag
+#| tbl-cap: "Diagnósticos do modelo binomial negativa"
+
+mc$diagnostico |> tab(digitos = 3)
+```
+
+```{r}
+#| label: contagem-robustez
+#| echo: false
+## O modelo depende de poucos bairros atípicos? Reestima-se sem os influentes.
+infl <- which(cooks.distance(mc$modelo) > 4 / nobs(mc$modelo))
+mc_sem <- MASS::glm.nb(pontos ~ pct_precario + offset(log_area), data = bd[-infl, ])
+b_com <- coef(mc$modelo)[2]; b_sem <- coef(mc_sem)[2]
+p_sem <- summary(mc_sem)$coefficients[2, 4]
+```
+
+A dispersão residual caiu para
+`r fmt_n(mc$diagnostico[["Dispersão residual (Pearson/gl)"]], 2)` — próxima de 1,
+confirmando que a binomial negativa **absorveu a superdispersão** que
+inviabilizava o Poisson. O pseudo-R² de McFadden é
+`r fmt_n(mc$diagnostico[["Pseudo-R² (McFadden)"]], 3)`: valores nessa ordem são
+comuns em modelos de contagem, mas deixam claro que **a precariedade explica
+apenas uma fração pequena** da variação na densidade de descarte.
+
+Há `r length(infl)` bairros influentes (distância de Cook > 4/n):
+`r paste(stringr::str_to_title(bd$EBAIRRNOME[infl]), collapse = ", ")`. Reestimado
+sem eles, o coeficiente **não enfraquece** — passa de `r fmt_n(b_com, 4)` para
+`r fmt_n(b_sem, 4)` (p = `r fmt_p(p_sem)`). A associação negativa, portanto,
+**não é produto de poucos bairros atípicos**.
+
+```{r}
 #| label: tbl-moran-res
 #| tbl-cap: "Autocorrelação espacial dos resíduos do modelo de contagem"
 #| cache: true
@@ -1294,6 +1343,7 @@ re$comparacao |> dplyr::mutate(`valor-p` = fmt_p(`valor-p`)) |> tab(digitos = 4)
 ```{r}
 #| label: reg-numeros
 #| echo: false
+r2_ols <- summary(re$ols)$r.squared
 b_ols <- re$comparacao$`β`[re$comparacao$Modelo == "OLS (não espacial)"]
 p_ols <- re$comparacao$`valor-p`[re$comparacao$Modelo == "OLS (não espacial)"]
 p_sem <- re$comparacao$`valor-p`[re$comparacao$Modelo == "Erro espacial (SEM)"]
@@ -1322,6 +1372,12 @@ A leitura correta é: **boa parte do que parecia efeito da precariedade é, na
 verdade, estrutura espacial** — bairros vizinhos se parecem, e ignorar isso
 inflaria a significância. O manuscrito deve reportar o modelo espacial, não
 apenas a correlação bivariada.
+
+**E o efeito é pequeno.** O R² do OLS é `r fmt_n(r2_ols, 3)`: a precariedade
+responde por cerca de `r fmt_n(100 * r2_ols, 0)`% da variação na densidade. O
+sinal é consistente entre as duas especificações (contagem com *offset* e
+log-densidade), mas a conclusão honesta é que **a maior parte do que determina
+onde se descarta continua não explicada** pelas covariáveis disponíveis.
 :::
 
 ```{r}

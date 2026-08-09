@@ -109,6 +109,19 @@ modelos_contagem <- function(dados, formula_base) {
   )
 
   modelo_final <- if (!inherits(bn, "try-error") && AIC(bn) < AIC(poisson)) bn else poisson
+
+  ## Diagnósticos do modelo escolhido: a dispersão residual mostra se a
+  ## superdispersão foi de fato absorvida, e o pseudo-R² de McFadden dá a
+  ## medida (sempre modesta em modelos de contagem) do poder explicativo.
+  nulo <- update(modelo_final, . ~ 1)
+  diagnostico <- tibble::tibble(
+    `Dispersão residual (Pearson/gl)` =
+      sum(residuals(modelo_final, type = "pearson")^2) / df.residual(modelo_final),
+    `Pseudo-R² (McFadden)` = 1 - as.numeric(logLik(modelo_final)) / as.numeric(logLik(nulo)),
+    `Observações influentes (Cook > 4/n)` = sum(cooks.distance(modelo_final) > 4 / nobs(modelo_final)),
+    n = nobs(modelo_final)
+  )
+
   coefs <- summary(modelo_final)$coefficients
   tabela_coef <- tibble::tibble(
     Termo = rownames(coefs),
@@ -121,7 +134,8 @@ modelos_contagem <- function(dados, formula_base) {
     `IC95 sup` = exp(coefs[, 1] + 1.96 * coefs[, 2])
   )
 
-  list(ajuste = ajuste, coeficientes = tabela_coef, modelo = modelo_final,
+  list(ajuste = ajuste, coeficientes = tabela_coef, diagnostico = diagnostico,
+       modelo = modelo_final,
        nome = if (identical(modelo_final, poisson)) "Poisson" else "Binomial negativa")
 }
 

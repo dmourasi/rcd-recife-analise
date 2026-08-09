@@ -49,6 +49,8 @@ bibliography: []
 
 source("00_setup.R")
 source("02_analises.R")
+source("03_covariaveis.R")
+suppressPackageStartupMessages({library(MASS); library(spatialreg)})
 
 ## O cache acelera reprocessamentos: a integração espacial (1.316 pontos contra
 ## 746 feições hidrográficas) leva alguns minutos.
@@ -61,7 +63,20 @@ if (file.exists("_dados_cache.rds")) {
 
 pts     <- DADOS$pts
 rpa     <- DADOS$rpa
-bairros <- DADOS$bairros
+
+## Covariáveis por bairro (assentamentos precários e ocupação). O cache evita
+## reprocessar as camadas de favelas e edificações a cada renderização.
+if (file.exists("_covariaveis_cache.rds")) {
+  bairros <- readRDS("_covariaveis_cache.rds")
+} else {
+  bairros <- construir_covariaveis(DADOS$bairros)
+  saveRDS(bairros, "_covariaveis_cache.rds")
+}
+
+## Células vazias aparecem como travessão: nas tabelas de comparação de modelos,
+## um NA significa "parâmetro inexistente neste modelo" (θ só existe na binomial
+## negativa; o OLS não tem parâmetro espacial), não dado ausente.
+options(knitr.kable.NA = "—")
 
 ## Impressão padronizada de tabelas
 tab <- function(df, legenda = NULL, digitos = 2, ...) {
@@ -128,6 +143,9 @@ análises de robustez.
    que os do Centro (@sec-risco).
 6. **A distância mediana até uma ecoestação é de ~2 km**, indicando déficit de
    cobertura da rede — e não apenas falha de educação ambiental (@sec-eco).
+7. **A densidade de descarte é MAIOR em bairros menos precários**, invertendo a
+   narrativa de justiça ambiental prevista no roteiro da discussão: RCD é
+   resíduo de obra e acompanha o dinamismo construtivo (@sec-determinantes).
 :::
 
 # Metodologia estatística {#sec-metodo}
@@ -187,6 +205,10 @@ tibble::tribble(
   "Simulação de aleatoriedade completa (CSR)", "Proximidade contra o território", "Constrói a hipótese nula geograficamente correta, que o qui-quadrado não fornece",
   "Densidade Kernel", "Visualizar concentração", "Superfície contínua, independente de limites administrativos",
   "Correlação de Spearman entre critérios", "Testar redundância do modelo", "Somar componentes correlacionados atribuiria peso oculto ao mesmo fenômeno",
+  "LISA (Moran local)", "Tipificar os agrupamentos", "Distingue núcleo de cluster de transição atípica, o que o Gi* não faz",
+  "Binomial negativa com offset de área", "Modelar a densidade por bairro", "Contagens espaciais apresentam superdispersão severa; Poisson subestimaria os erros padrão",
+  "Regressão espacial (SEM/SAR)", "Controlar dependência espacial", "Resíduos autocorrelacionados invalidam a inferência do modelo não espacial",
+  "AHP (autovetor + razão de consistência)", "Ponderar critérios por especialistas", "Implementado; converte julgamentos par a par em pesos auditáveis",
   "I de Moran (analítico + permutação)", "Autocorrelação espacial", "Testa se bairros vizinhos têm densidades semelhantes",
   "Getis-Ord Gi* + correção FDR", "Localizar clusters", "Identifica hot spots; FDR controla o problema de testes múltiplos",
   "Kruskal-Wallis + Dunn-Bonferroni", "Comparar risco entre RPAs", "Escore de risco é ordinal e assimétrico — não atende à ANOVA",
@@ -1019,6 +1041,84 @@ mapa coroplético: por não depender dos limites de bairro, ela mostra que o
 núcleo de concentração é **um só**, contínuo, e que sua extensão real é
 seccionada tanto pelas fronteiras de bairro quanto pelas de RPA.
 
+### A superfície depende da largura de banda escolhida?
+
+A largura de banda (σ) é a decisão discricionária mais influente numa estimativa
+de densidade: valores pequenos produzem manchas fragmentadas; valores grandes
+dissolvem tudo num único borrão. A figura abaixo repete a estimativa em quatro
+escalas para mostrar se o padrão identificado é real ou artefato dessa escolha.
+
+```{r}
+#| label: fig-kernel-sensib
+#| fig-cap: "Densidade Kernel sob quatro larguras de banda. O núcleo central persiste em todas as escalas; σ = 250 m fragmenta o padrão em focos de quarteirão e σ = 1.500 m dissolve a estrutura de bairro. O valor adotado (500 m) preserva ambas as leituras."
+#| fig-height: 8
+#| cache: true
+
+kde_multi <- sensibilidade_kernel(pts, sf::st_sf(geometry = DADOS$municipio),
+                                  sigmas = c(250, 500, 1000, 1500))
+kde_multi$faceta <- factor(paste0("σ = ", kde_multi$sigma, " m"),
+                           levels = paste0("σ = ", c(250, 500, 1000, 1500), " m"))
+
+ggplot() +
+  geom_raster(data = kde_multi, aes(x = x, y = y, fill = densidade)) +
+  geom_sf(data = rpa, fill = NA, colour = "white", linewidth = 0.3) +
+  facet_wrap(~faceta, ncol = 2) +
+  scale_fill_gradientn(colours = COR$sequencial, name = "Pontos/km²",
+                       labels = scales::label_number(decimal.mark = ",")) +
+  coord_sf(expand = FALSE) +
+  theme_void(base_size = 9) +
+  theme(legend.position = "right",
+        plot.background = element_rect(fill = "white", colour = NA),
+        strip.text = element_text(colour = "#333333", face = "bold", size = 9),
+        legend.text = element_text(colour = "#333333"),
+        legend.title = element_text(colour = "#333333"))
+```
+
+**Conclusão.** A localização do núcleo é **estável** nas quatro escalas — o que
+muda é apenas o grau de suavização. O padrão não é artefato da largura de banda.
+
+## Tipologia dos agrupamentos (LISA)
+
+O Getis-Ord Gi\* responde "onde os valores são altos". O LISA (*Local Indicators
+of Spatial Association*) responde uma pergunta diferente e complementar: **que
+tipo de vizinhança é esta** — valor alto cercado de altos (núcleo de cluster),
+baixo cercado de baixos (vazio) ou as transições atípicas, que o Gi\* não
+distingue.
+
+```{r}
+#| label: tbl-lisa
+#| tbl-cap: "Bairros com associação espacial local significativa (LISA, 9.999 permutações, p corrigido por FDR)"
+#| cache: true
+
+lisa <- lisa_local(bairros$densidade, bairros, bairros$EBAIRRNOME)
+
+lisa |>
+  dplyr::filter(Quadrante != "não significativo") |>
+  dplyr::mutate(Unidade = stringr::str_to_title(Unidade),
+                `valor-p` = fmt_p(`valor-p`),
+                `p ajustado (FDR)` = fmt_p(`p ajustado (FDR)`)) |>
+  dplyr::rename(Bairro = Unidade, `Densidade (pts/km²)` = Valor) |>
+  tab(digitos = 2)
+```
+
+O LISA é mais **conservador** que o Gi\*: identifica
+`r sum(lisa$Quadrante == "Alto-Alto (núcleo)")` núcleos Alto-Alto contra os
+`r nrow(gi_hot)` *hot spots* do Gi\*. A diferença é esperada e informativa — o
+Gi\* sinaliza toda vizinhança com soma elevada, enquanto o LISA exige que a
+unidade **e** seus vizinhos sejam simultaneamente atípicos. Os dois métodos
+convergem no essencial: o cluster de alta densidade é real e situa-se na Zona
+Oeste/Centro.
+
+::: {.callout-note collapse="true"}
+## Nota sobre a resolução do p simulado
+
+Com 999 permutações, o menor p possível é 0,001 e vários bairros empatam nesse
+valor, deixando a correção FDR exatamente no limiar de 0,05 — o resultado
+oscilava entre execuções. Adotaram-se **9.999 permutações**, que elevam a
+resolução para 1×10⁻⁴ e estabilizam a classificação (verificada por execuções
+repetidas com sementes distintas).
+:::
+
 **Achado com implicação para o desenho do estudo.** Os *hot spots* formam um
 cinturão **contíguo** — `r paste(stringr::str_to_title(gi_hot$Unidade), collapse = ", ")` —
 que atravessa a divisa entre RPA 4 e RPA 1. Isso indica que a RPA —
@@ -1026,6 +1126,182 @@ unidade administrativa adotada no manuscrito — **secciona artificialmente** o
 fenômeno: a escala geográfica real do problema é o bairro. Recomenda-se que a
 discussão incorpore essa leitura e que as recomendações de política sejam
 direcionadas ao cinturão identificado, não a regiões administrativas inteiras.
+
+## Determinantes da densidade: modelos de contagem e regressão espacial {#sec-determinantes}
+
+A metodologia do manuscrito promete relacionar o descarte a condições
+socioeconômicas. Esta seção cumpre essa promessa com modelagem explícita.
+
+### Covariáveis disponíveis e a que foi descartada
+
+```{r}
+#| label: tbl-covariaveis
+#| tbl-cap: "Covariáveis construídas por bairro a partir de camadas públicas"
+
+bd <- sf::st_drop_geometry(bairros)
+tibble::tribble(
+  ~Covariável, ~Definição, ~Fonte, ~Situação,
+  "% de área precária", "Proporção da área do bairro coberta por favela, cortiço ou loteamento irregular", "Cadastro oficial de assentamentos precários", "usada",
+  "População precária", "Soma da população residente nos assentamentos do bairro", "Idem (campo Populacao_)", "usada (colinear)",
+  "Densidade de edificações", "Edificações por km²", "Camada de edificações", "DESCARTADA",
+  "Taxa de ocupação", "Área construída / área do bairro", "Camada de edificações", "DESCARTADA"
+) |> tab()
+```
+
+::: {.callout-important}
+## Por que a camada de edificações foi descartada
+
+A camada de edificações do portal registra apenas
+`r fmt_n(sum(bd$n_edificacoes), 0)` imóveis e devolve **zero edificações em
+`r sum(!bd$cobertura_edif)` dos `r nrow(bd)` bairros** — entre eles Santo
+Antônio, Bairro do Recife, Brasília Teimosa e Ilha Joana Bezerra, todos
+densamente ocupados. Esses zeros são **ausência de dado, não ausência de
+construção**. Incluir a variável faria 33% das unidades entrarem no modelo com
+valor falso e produziria viés sistemático. A limitação foi verificada antes da
+modelagem e a covariável foi excluída.
+
+Consequência prática: **o ajuste do teste CSR pela densidade construída
+(@sec-csr) não pôde ser feito**, e o confundimento urbano permanece declarado
+como limitação em vez de controlado.
+:::
+
+### Renda: por que não entrou no modelo
+
+O Cadastro Único do portal traz renda familiar, mas **sem bairro nem
+coordenada** — apenas o código do município. É inutilizável para análise
+espacial. Na ausência de renda georreferenciada, o **percentual de área em
+assentamento precário** é o proxy socioeconômico adotado: é oficial,
+georreferenciado e cobre `r sum(bd$pct_precario > 0)` dos `r nrow(bd)` bairros.
+
+### Modelo de contagem
+
+A resposta é uma contagem com exposição desigual (as áreas variam de
+`r fmt_n(min(bd$area_km2), 2)` a `r fmt_n(max(bd$area_km2), 1)` km²), daí o
+*offset* log(área) — que converte o modelo, na prática, em um modelo de
+**densidade**.
+
+```{r}
+#| label: tbl-contagem
+#| tbl-cap: "Comparação entre Poisson e binomial negativa para o número de pontos por bairro"
+
+bd$log_area <- log(bd$area_km2)
+mc <- modelos_contagem(bd, pontos ~ pct_precario + offset(log_area))
+mc$ajuste |> tab(digitos = 2)
+```
+
+A dispersão de Pearson/gl do modelo de Poisson é
+`r fmt_n(mc$ajuste[["Dispersão (Pearson/gl)"]][1], 1)` — mais de quarenta vezes
+o valor esperado sob equidispersão. Há **superdispersão severa**, e a binomial
+negativa é o modelo apropriado (AIC `r fmt_n(mc$ajuste$AIC[2], 0)` contra
+`r fmt_n(mc$ajuste$AIC[1], 0)`). Reportar apenas o Poisson produziria erros
+padrão subestimados e significâncias infladas.
+
+```{r}
+#| label: tbl-contagem-coef
+#| tbl-cap: "Coeficientes do modelo binomial negativa (IRR = razão de taxas de incidência)"
+
+mc$coeficientes |> dplyr::mutate(`valor-p` = fmt_p(`valor-p`)) |> tab(digitos = 4)
+```
+
+```{r}
+#| label: tbl-moran-res
+#| tbl-cap: "Autocorrelação espacial dos resíduos do modelo de contagem"
+#| cache: true
+
+mres <- moran_residuos(mc$modelo, bairros)
+mres |> dplyr::mutate(`valor-p (permutação)` = fmt_p(`valor-p (permutação)`)) |>
+  tab(digitos = 4)
+```
+
+Os resíduos **permanecem espacialmente autocorrelacionados**, o que significa
+que o modelo não espacial deixa estrutura por explicar. Isso obriga a passar
+para um modelo espacial explícito.
+
+### Regressão espacial
+
+```{r}
+#| label: tbl-regressao-espacial
+#| tbl-cap: "OLS, modelo de erro espacial (SEM) e modelo de defasagem espacial (SAR) para o logaritmo da densidade de pontos"
+#| cache: true
+
+bd$log_dens <- log1p(bd$densidade)
+re <- regressao_espacial(log_dens ~ pct_precario, bd, bairros)
+re$comparacao |> dplyr::mutate(`valor-p` = fmt_p(`valor-p`)) |> tab(digitos = 4)
+```
+
+```{r}
+#| label: reg-numeros
+#| echo: false
+b_ols <- re$comparacao$`β`[re$comparacao$Modelo == "OLS (não espacial)"]
+p_ols <- re$comparacao$`valor-p`[re$comparacao$Modelo == "OLS (não espacial)"]
+p_sem <- re$comparacao$`valor-p`[re$comparacao$Modelo == "Erro espacial (SEM)"]
+p_sar <- re$comparacao$`valor-p`[re$comparacao$Modelo == "Defasagem espacial (SAR)"]
+lambda <- re$comparacao$`Parâmetro espacial`[re$comparacao$Modelo == "Erro espacial (SEM)"]
+```
+
+::: {.callout-important}
+## O achado central desta seção — e a cautela que ele exige
+
+No **OLS**, o percentual de área precária tem efeito **negativo e significativo**
+(β = `r fmt_n(b_ols, 4)`; p = `r fmt_p(p_ols)`): bairros com mais assentamentos
+precários apresentam **menor** densidade de descarte irregular de RCD. O mesmo
+sinal aparece no modelo binomial negativa
+(IRR = `r fmt_n(mc$coeficientes[["IRR (exp β)"]][2], 4)`, ou seja, cerca de 1%
+menos pontos por km² a cada ponto percentual de área precária).
+
+**Mas o efeito perde significância quando se controla a dependência espacial**
+(SEM: p = `r fmt_p(p_sem)`; SAR: p = `r fmt_p(p_sar)`), embora os dois modelos
+espaciais ajustem muito melhor que o OLS
+(AIC `r fmt_n(min(re$comparacao$AIC), 0)` contra
+`r fmt_n(max(re$comparacao$AIC), 0)`), com parâmetro espacial forte
+(λ ≈ `r fmt_n(lambda, 2)`).
+
+A leitura correta é: **boa parte do que parecia efeito da precariedade é, na
+verdade, estrutura espacial** — bairros vizinhos se parecem, e ignorar isso
+inflaria a significância. O manuscrito deve reportar o modelo espacial, não
+apenas a correlação bivariada.
+:::
+
+```{r}
+#| label: tbl-rs
+#| tbl-cap: "Diagnósticos de Rao (multiplicador de Lagrange) para escolha entre SEM e SAR"
+
+rs <- re$testes
+tibble::tibble(
+  Teste = names(rs),
+  Estatística = vapply(rs, function(x) unname(x$statistic), numeric(1)),
+  `valor-p` = fmt_p(vapply(rs, function(x) unname(x$p.value), numeric(1)))
+) |> tab(digitos = 3)
+```
+
+As versões não robustas (RSerr e RSlag) são ambas altamente significativas,
+enquanto as robustas não o são — configuração que, segundo Anselin, indica
+dependência espacial **presente mas não identificável** quanto à forma: os dados
+não permitem distinguir se ela opera pelo erro ou pela defasagem. Como SEM e SAR
+produzem AIC praticamente idêntico e mesma conclusão substantiva, a escolha
+entre eles não altera a interpretação.
+
+::: {.callout-warning}
+## Implicação para a discussão do manuscrito — inverte a narrativa esperada
+
+O roteiro da discussão previa enquadrar os achados em **justiça ambiental**, o
+que sugeriria maior descarte em áreas vulneráveis. Os dados apontam a direção
+**contrária**: a densidade de descarte é maior em bairros consolidados de renda
+média e alta — Madalena, Derby, Parnamirim, Espinheiro, Boa Vista, Graças —
+justamente os *hot spots* de @sec-espacial.
+
+A explicação mais plausível é a natureza do resíduo: **RCD é resíduo de obra**.
+Reformas e construções concentram-se onde há dinamismo imobiliário e imóveis
+consolidados a renovar, não nas áreas mais precárias. Isso também reinterpreta a
+tabela de renda de @sec-descritiva: os 44% de pontos em áreas de renda até
+R$ 1.020 refletem sobretudo o fato de que **a maior parte do território é de
+renda baixa** — sem denominador, o número engana. Normalizada, a associação
+inverte de sinal.
+
+Recomenda-se substituir o enquadramento de justiça ambiental por uma leitura de
+**dinâmica construtiva urbana**, mais aderente à evidência, mencionando a
+vulnerabilidade apenas onde ela de fato aparece (a exposição a corpos hídricos).
+:::
 
 ---
 
@@ -1301,6 +1577,55 @@ Paz et al. (2020); e (iii) reconhecer, nas limitações, que uma progressão lin
 produziria classificação mais conservadora.
 :::
 
+## Estrutura AHP para ponderação por especialistas {#sec-ahp}
+
+A revisão sugeriu derivar os pesos por *Analytic Hierarchy Process*. O método
+está implementado e validado (autovetor principal e razão de consistência de
+Saaty), pronto para receber os julgamentos assim que o painel responder.
+
+::: {.callout-important}
+## O que esta seção NÃO faz
+
+Ela **não produz pesos AHP para o estudo**. O AHP converte julgamentos de
+especialistas em números; inventar esses julgamentos geraria pesos sem lastro —
+exatamente o problema que o método existe para resolver. A matriz abaixo é
+**ilustrativa**, serve apenas para demonstrar que a implementação funciona, e
+seus valores não devem ser usados no artigo.
+:::
+
+```{r}
+#| label: tbl-ahp
+#| tbl-cap: "Demonstração da rotina AHP com uma matriz ILUSTRATIVA (não são pesos do estudo)"
+
+matriz_exemplo <- matrix(
+  c(1,   3,   4,
+    1/3, 1,   2,
+    1/4, 1/2, 1),
+  nrow = 3, byrow = TRUE,
+  dimnames = list(c("Recursos hídricos", "Unidades de saúde", "Instituições de ensino"),
+                  c("Recursos hídricos", "Unidades de saúde", "Instituições de ensino")))
+
+ahp <- ahp_pesos(matriz_exemplo)
+ahp$pesos |> tab(digitos = 3)
+```
+
+```{r}
+#| label: tbl-ahp-diag
+#| tbl-cap: "Diagnóstico de consistência da matriz"
+
+ahp$diagnostico |> tab(digitos = 4)
+```
+
+**Como conduzir o painel.** Cada especialista responde a três comparações
+("quanto mais importante é a proximidade a corpos hídricos frente à proximidade
+a escolas?", na escala 1–9 de Saaty); as matrizes individuais são agregadas pela
+média geométrica; a razão de consistência precisa ficar abaixo de 0,10. Com 3 a
+5 especialistas o procedimento é viável em poucas semanas e transformaria a
+fragilidade apontada pelo revisor em contribuição metodológica.
+
+Enquanto isso, a **análise de sensibilidade de @sec-sensibilidade** já responde
+à crítica: mostra que a conclusão não depende dos pesos.
+
 ## Sensibilidade à decisão sobre coordenadas duplicadas {#sec-robustez-dup}
 
 ```{r}
@@ -1476,14 +1801,18 @@ tibble::tribble(
 #| echo: false
 
 tibble::tribble(
-  ~Análise, ~`Por que não foi feita`,
-  "Regressão espacial (SAR/SEM) ou GWR", "Exige renda e covariáveis por bairro (Censo 2022), ainda não disponíveis",
-  "Modelo Poisson/binomial negativa por bairro", "Sem covariáveis, acrescentaria pouco à densidade já apresentada",
-  "LISA (Moran local)", "O Getis-Ord Gi* já localiza os clusters; acréscimo marginal",
-  "Análise temporal", "Levantamento de campo em campanha única; sem variação temporal a modelar",
-  "Ajuste por densidade construída no teste CSR", "Resolveria o confundimento urbano; requer processar a camada de edificações",
-  "AHP com painel de especialistas", "Exige recrutamento de painel; a análise de sensibilidade cobre a crítica no prazo da revisão",
-  "Análise de poder", "Amostra censitária do fenômeno mapeado, não amostra probabilística — poder não é o conceito aplicável"
+  ~Análise, ~Situação, ~Observação,
+  "Regressão espacial (SEM/SAR)", "FEITA", "@sec-determinantes — com proxy de precariedade no lugar de renda",
+  "Modelo Poisson/binomial negativa", "FEITA", "@sec-determinantes — superdispersão severa exigiu binomial negativa",
+  "LISA (Moran local)", "FEITA", "@sec-espacial — 9.999 permutações para estabilizar o FDR",
+  "Sensibilidade da largura de banda do Kernel", "FEITA", "@sec-espacial — padrão estável de 250 m a 1.500 m",
+  "Estrutura AHP", "IMPLEMENTADA", "@sec-ahp — aguarda julgamentos de um painel real",
+  "GWR (regressão geograficamente ponderada)", "não feita", "Com uma única covariável e n = 94, acrescentaria pouco ao SEM/SAR",
+  "Renda por bairro (Censo 2022)", "não feita", "Cadastro Único do portal não tem bairro nem coordenada; exige tabulação do IBGE por setor censitário",
+  "Ajuste do CSR por densidade construída", "INVIÁVEL", "Camada de edificações cobre só 67% dos bairros (zeros falsos)",
+  "Análise temporal", "não feita", "Levantamento em campanha única; não há variação temporal a modelar",
+  "AHP com painel de especialistas", "não feita", "Exige recrutamento; a sensibilidade de @sec-sensibilidade cobre a crítica no prazo da revisão",
+  "Análise de poder", "não se aplica", "Levantamento censitário do fenômeno, não amostra probabilística"
 ) |> tab()
 ```
 
@@ -1560,6 +1889,8 @@ tibble::tribble(
   "Alta", "Incluir a análise de sensibilidade como resposta à crítica dos pesos", "@sec-sensibilidade",
   "Alta", "Reescrever 'baixa correlação' como 'sem correlação significativa'", "@sec-rpa",
   "Média", "Incluir a tabela de descritivas das distâncias", "@sec-descritiva",
+  "Alta", "Substituir o enquadramento de justiça ambiental por dinâmica construtiva", "@sec-determinantes",
+  "Alta", "Reportar o modelo espacial, não a correlação bivariada com precariedade", "@sec-determinantes",
   "Média", "Cumprir a promessa metodológica de análise por renda", "@sec-renda-inf",
   "Média", "Reinterpretar o achado das ecoestações como déficit de cobertura", "@sec-eco",
   "Média", "Explicitar a distinção entre % de área e % de pontos", "@sec-risco",

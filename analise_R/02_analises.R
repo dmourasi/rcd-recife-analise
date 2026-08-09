@@ -351,6 +351,94 @@ getis_ord <- function(valores, geometrias, rotulos) {
     dplyr::arrange(dplyr::desc(`Gi* (z)`))
 }
 
+## E.3 LISA — Moran local (Anselin, 1995)
+## Enquanto o Gi* responde "onde os valores são altos", o LISA responde "que
+## tipo de vizinhança é esta": alto cercado de alto (HH), baixo cercado de baixo
+## (LL) e as transições atípicas (HL, LH), que o Gi* não distingue.
+##
+## `n_perm` é deliberadamente maior aqui do que no Moran global: o p simulado
+## tem resolução 1/(n_perm+1), e com 999 permutações vários bairros empatam no
+## menor valor possível (0,002), deixando a correção FDR no limiar e instável
+## entre execuções. Com 9.999 permutações a resolução passa a 1e-4 e o
+## resultado se estabiliza.
+lisa_local <- function(valores, geometrias, rotulos, n_perm = 9999,
+                       semente = PARAMS$semente) {
+  set.seed(semente)
+  viz <- spdep::poly2nb(geometrias, queen = TRUE)
+  pesos <- spdep::nb2listw(viz, style = "W", zero.policy = TRUE)
+  lm_res <- spdep::localmoran_perm(valores, pesos, nsim = n_perm, zero.policy = TRUE)
+
+  ## Valor padronizado e sua defasagem espacial — definem o quadrante.
+  ## Os nomes levam o sufixo `_val` para não colidirem com a coluna `z (Ii)` da
+  ## tabela: dentro de `mutate()`, uma coluna de mesmo nome mascararia estes
+  ## vetores e o quadrante sairia calculado sobre o z do Ii (sempre positivo em
+  ## agrupamentos), classificando unidades de valor baixo como "Alto".
+  z_val <- scale(valores)[, 1]
+  z_lag_val <- spdep::lag.listw(pesos, z_val, zero.policy = TRUE)
+
+  ## `localmoran_perm` devolve, além do p simulado, colunas de assimetria e
+  ## curtose — daí selecionar pelo NOME, e não pela última posição.
+  col_p <- grep("^Pr\\(z", colnames(lm_res))
+  p <- lm_res[, col_p[length(col_p)]]
+
+  tibble::tibble(
+    Unidade = rotulos, Valor = valores,
+    `Ii local` = lm_res[, 1], `z (Ii)` = lm_res[, 4], `valor-p` = p,
+    `p ajustado (FDR)` = p.adjust(p, method = "BH"),
+    Quadrante = dplyr::case_when(
+      p.adjust(p, method = "BH") >= PARAMS$alfa ~ "não significativo",
+      z_val > 0 & z_lag_val > 0 ~ "Alto-Alto (núcleo)",
+      z_val < 0 & z_lag_val < 0 ~ "Baixo-Baixo (vazio)",
+      z_val > 0 & z_lag_val < 0 ~ "Alto-Baixo (atípico)",
+      TRUE ~ "Baixo-Alto (atípico)")
+  )
+}
+
+## E.3b Regressão espacial — usada quando os resíduos de um modelo não espacial
+## apresentam autocorrelação. Compara OLS, modelo de erro espacial (SEM) e
+## modelo de defasagem espacial (SAR).
+##
+## Atenção ao extrair coeficientes: em `spatialreg`, `coef()` devolve o
+## parâmetro espacial (lambda ou rho) na PRIMEIRA posição, de modo que
+## `coef(m)[2]` é o intercepto, não a primeira covariável. Os betas devem sair
+## de `summary(m)$Coef`.
+regressao_espacial <- function(formula, dados, geometrias) {
+  viz <- spdep::poly2nb(geometrias, queen = TRUE)
+  pesos <- spdep::nb2listw(viz, style = "W", zero.policy = TRUE)
+
+  ols <- lm(formula, data = dados)
+  sem <- spatialreg::errorsarlm(formula, data = dados, listw = pesos, zero.policy = TRUE)
+  sar <- spatialreg::lagsarlm(formula, data = dados, listw = pesos, zero.policy = TRUE)
+
+  extrai <- function(m, nome, parametro) {
+    co <- if (inherits(m, "lm")) summary(m)$coefficients else summary(m)$Coef
+    tibble::tibble(
+      Modelo = nome,
+      `Parâmetro espacial` = parametro,
+      Termo = rownames(co)[-1],
+      `β` = co[-1, 1], `EP` = co[-1, 2], `valor-p` = co[-1, 4],
+      AIC = AIC(m))
+  }
+  comparacao <- dplyr::bind_rows(
+    extrai(ols, "OLS (não espacial)", NA_real_),
+    extrai(sem, "Erro espacial (SEM)", unname(sem$lambda)),
+    extrai(sar, "Defasagem espacial (SAR)", unname(sar$rho)))
+
+  list(comparacao = comparacao, ols = ols, sem = sem, sar = sar,
+       testes = spdep::lm.RStests(ols, pesos,
+                                  test = c("RSerr", "RSlag", "adjRSerr", "adjRSlag")))
+}
+
+## E.4 Sensibilidade da superfície Kernel à largura de banda
+## A escolha de sigma é a decisão discricionária mais influente numa estimativa
+## de densidade; esta função mostra se o padrão identificado depende dela.
+sensibilidade_kernel <- function(pts_sf, janela, sigmas = c(250, 500, 1000, 1500)) {
+  purrr::map_dfr(sigmas, function(s) {
+    d <- densidade_kernel(pts_sf, janela, sigma = s, resolucao = 200)
+    tibble::tibble(sigma = s, x = d$x, y = d$y, densidade = d$densidade)
+  })
+}
+
 ## =============================================================================
 ## F. COMPARAÇÃO DE GRUPOS (ESCORE DE RISCO ENTRE RPAs)
 ## =============================================================================
@@ -460,6 +548,49 @@ sensibilidade_pesos <- function(pts, cenarios) {
                    `Classe I (%)` = pct[1], `Classe II (%)` = pct[2],
                    `Classe III (%)` = pct[3], `Classe IV (%)` = pct[4])
   })
+}
+
+## =============================================================================
+## H.2 ESTRUTURA AHP PARA PONDERAÇÃO DOS CRITÉRIOS
+## =============================================================================
+## O Analytic Hierarchy Process converte julgamentos par a par de especialistas
+## em pesos numéricos auditáveis. Esta função implementa o método completo
+## (autovetor principal + razão de consistência de Saaty).
+##
+## IMPORTANTE: ela NÃO substitui o painel. Os julgamentos precisam vir de
+## especialistas reais; inventá-los produziria pesos sem lastro, exatamente o
+## problema que o AHP existe para resolver. A função fica pronta para receber a
+## matriz assim que o painel responder ao questionário.
+##
+## `matriz`: matriz quadrada recíproca na escala de Saaty (1–9), onde a[i,j] = k
+## significa "o critério i é k vezes mais importante que o j".
+ahp_pesos <- function(matriz, criterios = rownames(matriz)) {
+  n <- nrow(matriz)
+  stopifnot(n == ncol(matriz), all(abs(matriz * t(matriz) - 1) < 1e-8))
+
+  ## Autovetor principal — os pesos
+  ev <- eigen(matriz)
+  i_max <- which.max(Re(ev$values))
+  pesos <- Re(ev$vectors[, i_max])
+  pesos <- pesos / sum(pesos)
+  lambda_max <- Re(ev$values[i_max])
+
+  ## Consistência: IC = (λmax − n)/(n − 1); RC = IC / IR
+  ic <- (lambda_max - n) / (n - 1)
+  ir_tabela <- c(0, 0, 0.58, 0.90, 1.12, 1.24, 1.32, 1.41, 1.45, 1.49)
+  rc <- if (n <= length(ir_tabela) && ir_tabela[n] > 0) ic / ir_tabela[n] else NA_real_
+
+  list(
+    pesos = tibble::tibble(Critério = criterios, Peso = pesos,
+                           `Peso (%)` = 100 * pesos),
+    diagnostico = tibble::tibble(
+      `λ máx` = lambda_max, n = n,
+      `Índice de consistência (IC)` = ic,
+      `Razão de consistência (RC)` = rc,
+      Veredito = dplyr::if_else(is.na(rc), "não avaliável",
+                  dplyr::if_else(rc < 0.10, "consistente (RC < 0,10)",
+                                 "INCONSISTENTE — revisar julgamentos")))
+  )
 }
 
 ## =============================================================================

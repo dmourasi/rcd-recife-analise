@@ -197,11 +197,22 @@ matrixStats_colMedians <- function(m) apply(m, 2, median)
 ## reamostra de n pontos dessa população. O procedimento é equivalente — a
 ## população de referência É a distribuição nula — e reduz o custo em duas
 ## ordens de grandeza.
+##
+## `excluir`: geometrias a remover da área de sorteio. É indispensável excluir
+## a lâmina d'água — cerca de 5% do polígono municipal é rio, canal ou estuário,
+## onde não se deposita entulho em terra. Sem essa exclusão, parte dos pontos
+## nulos cai dentro dos próprios corpos hídricos com distância zero, deslocando
+## a distribuição nula para baixo e tornando o teste conservador.
 teste_proximidade_csr <- function(pts_sf, camadas, janela, n_sim = 999,
-                                  n_ref = 20000, semente = PARAMS$semente) {
+                                  n_ref = 20000, excluir = NULL,
+                                  semente = PARAMS$semente) {
   set.seed(semente)
   n <- nrow(pts_sf)
   janela_geom <- sf::st_geometry(janela)
+  if (!is.null(excluir)) {
+    janela_geom <- sf::st_difference(
+      janela_geom, sf::st_union(sf::st_geometry(excluir))) |> sf::st_make_valid()
+  }
 
   observado <- vapply(camadas, function(cam) median(dist_min(pts_sf, cam)), numeric(1))
 
@@ -350,22 +361,33 @@ comparar_grupos <- function(valor, grupo) {
 
   kw <- kruskal.test(valor ~ grupo, data = df)
   n <- nrow(df); k <- nlevels(df$grupo)
-  eps2 <- (unname(kw$statistic) - k + 1) / (n - k)     # epsilon quadrado
+  H <- unname(kw$statistic)
+  ## Dois tamanhos de efeito, com as fórmulas que de fato lhes correspondem —
+  ## são frequentemente confundidos na literatura aplicada:
+  ##   eta²  = (H - k + 1)/(n - k)      proporção da variabilidade explicada
+  ##   epsilon² = H/(n - 1)             versão corrigida para o viés de eta²
+  eta2  <- (H - k + 1) / (n - k)
+  eps2  <- H / (n - 1)
   ## Alternativa robusta a heterocedasticidade (não assume variâncias iguais)
   welch <- oneway.test(valor ~ grupo, data = df, var.equal = FALSE)
 
+  interp <- function(e) dplyr::case_when(e < 0.01 ~ "desprezível", e < 0.06 ~ "pequeno",
+                                         e < 0.14 ~ "médio", TRUE ~ "grande")
   resumo <- tibble::tibble(
     Teste = c("Kruskal-Wallis", "ANOVA de Welch (robusta)"),
-    Estatística = c(unname(kw$statistic), unname(welch$statistic)),
+    Estatística = c(H, unname(welch$statistic)),
     gl = c(unname(kw$parameter), unname(welch$parameter[1])),
     `valor-p` = c(kw$p.value, welch$p.value),
     ## O tamanho de efeito acompanha o teste principal; a ANOVA de Welch entra
     ## apenas como verificação convergente, por isso o traço.
-    `Tamanho de efeito` = c(paste0("ε² = ", fmt_n(eps2, 3)), "—"),
-    Interpretação = c(dplyr::case_when(eps2 < 0.01 ~ "desprezível", eps2 < 0.06 ~ "pequeno",
-                                       eps2 < 0.14 ~ "médio", TRUE ~ "grande"), "—")
+    `Tamanho de efeito` = c(sprintf("η² = %s; ε² = %s", fmt_n(eta2, 3), fmt_n(eps2, 3)), "—"),
+    Interpretação = c(interp(eps2), "—")
   )
+  attr(resumo, "eta2") <- eta2
   attr(resumo, "eps2") <- eps2
+  ## Proporção de empates: com muitos empates a mediana perde poder descritivo
+  attr(resumo, "prop_empates") <- 1 - length(unique(df$valor)) / nrow(df)
+  attr(resumo, "moda_prop") <- max(prop.table(table(df$valor)))
 
   dunn <- FSA::dunnTest(valor ~ grupo, data = df, method = "bonferroni")$res
   dunn <- tibble::as_tibble(dunn) |>

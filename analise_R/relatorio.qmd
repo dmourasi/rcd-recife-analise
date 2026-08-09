@@ -286,6 +286,47 @@ A contagem recomputada reproduz a do manuscrito com diferença máxima de
 o que **valida a atribuição espacial original dos autores**. Apenas a área da
 RPA 1 estava incorreta (`r fmt_n(rpa$area_km2[1])` km², não 41,812 km²).
 
+::: {.callout-note collapse="true"}
+## Duas notas sobre as áreas
+
+**Fonte das contagens.** Os testes e densidades desta seção usam as contagens
+**do manuscrito** (total `r sum(DADOS$tab_manuscrito$rpa)`), para que os
+resultados sejam diretamente comparáveis aos publicados. Com as contagens
+recomputadas (total `r nrow(pts)`) as densidades mudam pouco e a ordenação das
+RPAs se mantém — a única alteração perceptível é na RPA 2
+(`r fmt_n(DADOS$tab_manuscrito$rpa[2] / rpa$area_km2[2], 2)` → `r fmt_n(sum(pts$RPA == 2) / rpa$area_km2[2], 2)` pontos/km²).
+
+**Área inclui lâmina d'água.** A soma das geometrias oficiais é
+`r fmt_n(sum(rpa$area_km2), 1)` km², acima dos 217,01 km² usualmente citados
+para Recife, porque os polígonos incorporam rios, canais e trechos de estuário.
+A densidade por área é, portanto, ligeiramente **subestimada** nas RPAs
+atravessadas por corpos hídricos extensos. Como o efeito é da ordem de 3% e
+afeta as regiões de modo semelhante, a comparação entre RPAs permanece válida.
+:::
+
+## Divergência interna do manuscrito nos cortes de distância da água
+
+::: {.callout-warning}
+A **Tabela 1** do manuscrito define, para recursos hídricos, os cortes
+20 / 40 / **60** / 120 m. Já as **tabelas de resultados** apresentam classes
+rotuladas "40–80" e "80–120", que correspondem aos cortes
+20 / 40 / **80** / 120 m. As duas especificações não podem estar ambas corretas.
+
+```{r}
+#| label: corte-agua
+#| echo: false
+s_60 <- pontuar(pts$d_agua, c(20, 40, 60, 120))
+s_80 <- pontuar(pts$d_agua, c(20, 40, 80, 120))
+n_muda <- sum(s_60 != s_80)
+```
+
+Esta análise adota os cortes da **Tabela 1** (60 m), por ser a definição formal
+do método. A escolha altera o escore de `r n_muda` pontos
+(`r fmt_n(100 * n_muda / nrow(pts), 1)`% da base) e desloca o Sr médio de
+`r fmt_n(mean(s_60), 2)` para `r fmt_n(mean(s_80), 2)` — impacto pequeno, mas
+**os autores precisam decidir qual versão é a correta** e uniformizar o texto.
+:::
+
 ---
 
 # PARTE II — Estatística descritiva {#sec-descritiva}
@@ -786,16 +827,20 @@ constrói essa hipótese nula por simulação.
 
 ```{r}
 #| label: tbl-csr
-#| tbl-cap: "Distância mediana observada versus esperada sob aleatoriedade espacial completa (999 repetições sobre população de referência de 20.000 pontos uniformes no município)"
+#| tbl-cap: "Distância mediana observada versus esperada sob aleatoriedade espacial completa (999 repetições sobre população de referência de 20.000 pontos uniformes na porção terrestre do município)"
 #| cache: true
 
 camadas_criterio <- list("Corpos hídricos" = DADOS$hidrico,
                          "Unidades de saúde" = DADOS$saude,
                          "Instituições de ensino" = DADOS$escolas)
 
+## A lâmina d'água (≈5% do polígono municipal) é excluída da área de sorteio:
+## não se deposita entulho em terra dentro de um rio, e mantê-la faria parte dos
+## pontos nulos surgir com distância zero, deslocando a hipótese nula.
 csr <- teste_proximidade_csr(pts, camadas_criterio,
                              sf::st_sf(geometry = DADOS$municipio),
-                             n_sim = 999, n_ref = 20000)
+                             n_sim = 999, n_ref = 20000,
+                             excluir = DADOS$hidrico)
 
 csr |> dplyr::mutate(`valor-p` = fmt_p(`valor-p`)) |> tab(digitos = 1)
 ```
@@ -837,10 +882,12 @@ embora sistematicamente mais próxima dos critérios do que o esperado ao acaso"
 #| fig-height: 3.6
 #| cache: true
 
-## Reconstrói a distribuição nula apenas para exibição
+## Reconstrói a distribuição nula apenas para exibição (mesma área de sorteio)
 set.seed(PARAMS$semente)
-ref <- sf::st_sf(geometry = sf::st_sample(sf::st_geometry(DADOS$municipio),
-                                          20000, type = "random"))
+terra <- sf::st_difference(sf::st_geometry(DADOS$municipio),
+                           sf::st_union(sf::st_geometry(DADOS$hidrico))) |>
+  sf::st_make_valid()
+ref <- sf::st_sf(geometry = sf::st_sample(terra, 20000, type = "random"))
 nulos <- purrr::imap_dfr(camadas_criterio, function(cam, nome) {
   d <- dist_min(ref, cam)
   meds <- replicate(999, median(sample(d, nrow(pts), replace = TRUE)))
@@ -1073,8 +1120,29 @@ comp_rpa <- comparar_grupos(pts$Sf, paste("RPA", pts$RPA))
 comp_rpa$resumo |> dplyr::mutate(`valor-p` = fmt_p(`valor-p`)) |> tab(digitos = 3)
 
 eps2_rpa <- attr(comp_rpa$resumo, "eps2")
+eta2_rpa <- attr(comp_rpa$resumo, "eta2")
+moda_sf  <- attr(comp_rpa$resumo, "moda_prop")
 H_rpa    <- comp_rpa$resumo$Estatística[1]
 ```
+
+::: {.callout-warning}
+## Empates no escore limitam a leitura por mediana
+
+O escore Sf assume apenas `r length(unique(pts$Sf))` valores distintos, e
+**`r fmt_n(100 * moda_sf, 1)`% dos pontos estão no valor mínimo possível
+(Sf = 1,5)** — resultado de somar três escores de 0,5, atribuídos quando o ponto
+está na classe mais distante dos três critérios. Duas consequências:
+
+1. A **mediana é 1,5 em quatro das seis RPAs**, o que a torna pouco informativa
+   para comparação; a média e os quartis superiores discriminam melhor.
+2. O volume de empates reduz o poder do Kruskal-Wallis. O teste ainda detecta
+   diferença, mas o tamanho de efeito pequeno deve ser lido também à luz dessa
+   concentração — e não apenas como "a RPA importa pouco".
+
+Note ainda que **Sf = 0 é inatingível**: o mínimo teórico do modelo é 1,5. A
+Classe I, definida no manuscrito como 0 a 7,5, cobre portanto uma faixa que
+começa abaixo do que o instrumento pode produzir.
+:::
 
 Aplicou-se o **Kruskal-Wallis** por se tratar de variável ordinal e assimétrica
 (ver @sec-descritiva). A **ANOVA de Welch** é reportada como verificação
@@ -1113,7 +1181,7 @@ ggplot(sf::st_drop_geometry(pts), aes(x = factor(RPA), y = Sf)) +
            colour = COR$neutra,
            label = c("limite Classe I", "limite Classe II", "limite Classe III")) +
   labs(x = "Região Político-Administrativa", y = "Escore final de risco (Sf)",
-       caption = sprintf("Kruskal-Wallis: H = %s; gl = %d; p < 0,001; ε² = %s.",
+       caption = sprintf("Kruskal-Wallis: H = %s; gl = %d; p < 0,001; ε² = %s (efeito pequeno).",
                          fmt_n(H_rpa, 2), comp_rpa$resumo$gl[1],
                          fmt_n(eps2_rpa, 3))) +
   tema_artigo()
@@ -1127,7 +1195,7 @@ Centro (RPA 1) há *menos* descartes, porém mais próximos de equipamentos
 públicos e corpos hídricos. Quantidade e gravidade são dimensões distintas do
 problema e demandam respostas de política distintas.
 
-O tamanho de efeito (ε² = `r fmt_n(eps2_rpa, 3)`)
+O tamanho de efeito (η² = `r fmt_n(eta2_rpa, 3)`; ε² = `r fmt_n(eps2_rpa, 3)`)
 é **pequeno**: a RPA explica pouco da variabilidade do risco individual —
 coerente com o achado de que a escala relevante é o bairro (@sec-espacial).
 
@@ -1310,15 +1378,22 @@ renda_valida |>
   theme(axis.text.x = element_text(angle = 30, hjust = 1))
 ```
 
-::: {.callout-warning}
-## Limitação desta análise
+::: {.callout-important}
+## Este teste tem valor limitado — não o use como evidência principal
 
-O teste compara as contagens observadas com uma distribuição uniforme entre
-faixas, mas **não há denominador**: não se sabe quantos domicílios ou que
-extensão territorial cada faixa de renda ocupa. Portanto o resultado descreve
-**concentração absoluta**, não taxa per capita. Para afirmar desigualdade
-ambiental é necessário cruzar renda por bairro (Censo 2022) com a densidade por
-bairro já calculada — análise viável com o arquivo `bairros_stats.csv` gerado.
+O qui-quadrado acima compara as contagens observadas com uma distribuição
+**uniforme entre faixas de renda**, e essa hipótese nula é frágil por dois
+motivos: as faixas têm **larguras desiguais** (R$ 255 na primeira, R$ 2.550 na
+sexta) e **não há denominador** — não se sabe quantos domicílios ou que extensão
+territorial cada faixa ocupa. Rejeitar a uniformidade, aqui, é quase automático
+e diz pouco.
+
+O que a tabela sustenta é uma afirmação **descritiva**: os pontos concentram-se
+nas faixas de renda baixa e intermediária. Para sustentar desigualdade
+ambiental de fato, é indispensável obter a **renda por bairro (Censo 2022)** e
+cruzá-la com a densidade por bairro já calculada — a estrutura para isso está
+pronta em `bairros_stats.csv`. Recomenda-se que o manuscrito apresente esta
+seção como descritiva, sem o teste, até que o denominador esteja disponível.
 :::
 
 ## Ecoestações: cobertura da rede {#sec-eco}
@@ -1384,7 +1459,31 @@ tibble::tribble(
   "Coordenadas duplicadas", "Ambiguidade sobre repetição legítima vs. dupla digitação", "Teste de robustez em @sec-robustez-dup",
   "Falácia ecológica", "Associações em nível de bairro não se transferem a indivíduos", "Interpretação mantida em nível agregado",
   "Confundimento urbano no teste CSR", "Proximidade pode refletir coocorrência com a mancha urbana, não escolha de local", "Declarada em @sec-csr; exigiria modelo ajustado por densidade construída",
-  "Distância euclidiana", "Não considera barreiras físicas nem rede viária", "Adequada ao objetivo (exposição ambiental, não deslocamento)"
+  "Distância euclidiana", "Não considera barreiras físicas nem rede viária", "Adequada ao objetivo (exposição ambiental, não deslocamento)",
+  "Empates no escore Sf", "52% dos pontos no valor mínimo tornam a mediana pouco discriminante", "Reportadas média e quartis junto da mediana",
+  "Área das RPAs inclui lâmina d'água", "Densidade por km² levemente subestimada onde há rios extensos", "Quantificada (~3%); afeta as RPAs de modo semelhante",
+  "Cortes de distância da água divergem no manuscrito", "Tabela 1 indica 60 m; tabelas de resultado indicam 80 m", "Adotada a Tabela 1; impacto quantificado em 58 pontos",
+  "Largura de banda do Kernel", "A escolha de 500 m altera a suavização da superfície", "Valor usual para escala intraurbana; não testada sensibilidade",
+  "Teste de renda sem denominador", "Não permite afirmar taxa por domicílio ou por área", "Rebaixado a descritivo; exige renda por bairro do Censo"
+) |> tab()
+```
+
+## Procedimentos deliberadamente não executados
+
+```{r}
+#| label: tbl-nao-feito
+#| tbl-cap: "Análises consideradas e razão de não terem sido realizadas"
+#| echo: false
+
+tibble::tribble(
+  ~Análise, ~`Por que não foi feita`,
+  "Regressão espacial (SAR/SEM) ou GWR", "Exige renda e covariáveis por bairro (Censo 2022), ainda não disponíveis",
+  "Modelo Poisson/binomial negativa por bairro", "Sem covariáveis, acrescentaria pouco à densidade já apresentada",
+  "LISA (Moran local)", "O Getis-Ord Gi* já localiza os clusters; acréscimo marginal",
+  "Análise temporal", "Levantamento de campo em campanha única; sem variação temporal a modelar",
+  "Ajuste por densidade construída no teste CSR", "Resolveria o confundimento urbano; requer processar a camada de edificações",
+  "AHP com painel de especialistas", "Exige recrutamento de painel; a análise de sensibilidade cobre a crítica no prazo da revisão",
+  "Análise de poder", "Amostra censitária do fenômeno mapeado, não amostra probabilística — poder não é o conceito aplicável"
 ) |> tab()
 ```
 

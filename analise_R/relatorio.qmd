@@ -1911,6 +1911,57 @@ tibble::tribble(
 ) |> tab()
 ```
 
+## Comentário sobre as fragilidades que permanecem
+
+As limitações da tabela acima não têm todas o mesmo peso. Três delas afetam
+diretamente a força do que se pode afirmar, e convém que os autores as tenham
+claras antes de redigir a discussão — inclusive porque é provável que um
+revisor as levante.
+
+**A primeira é o confundimento urbano no teste de aleatoriedade
+(@sec-csr).** O teste mostra que os pontos estão mais próximos dos critérios do
+que o acaso produziria, mas não consegue separar duas explicações concorrentes:
+uma escolha de local associada a esses equipamentos, ou a simples coocorrência
+de descarte e equipamentos na malha urbana consolidada. O ajuste que resolveria
+isso — restringir a hipótese nula à área efetivamente urbanizada — dependia de
+uma camada de edificações que se mostrou inutilizável. A conclusão segura é a
+**negativa**: não se sustenta a afirmação de que os pontos estão afastados dos
+critérios. A afirmação positiva, de que haveria atração por eles, permanece **em
+aberto**.
+
+**A segunda é a ausência de renda georreferenciada.** O percentual de área
+precária é um proxy defensável, mas é um proxy: mede informalidade urbana, não
+renda. E responde por apenas
+`r fmt_n(100 * summary(re$ols)$r.squared, 0)`% da variação na densidade de
+descarte. Dito de outro modo, **a maior parte do que determina onde se descarta
+continua sem explicação** nos dados disponíveis. Faltam candidatos óbvios —
+intensidade de obras licenciadas, malha viária, fiscalização, dinâmica
+imobiliária —, e nenhum deles estava ao alcance desta análise.
+
+**A terceira é o estatuto do achado socioeconômico.** A associação negativa
+entre precariedade e densidade de descarte é consistente em três abordagens
+(correlação, binomial negativa e OLS) e resiste à remoção dos bairros
+influentes. Mas **perde significância quando se controla a dependência
+espacial** (p ≈ 0,07). Isso não a invalida: um p de 0,07 com n = 94 e efeito
+pequeno é exatamente o que se espera de um sinal real porém modesto. Significa
+que ela deve ser apresentada como **evidência sugestiva que contraria a
+expectativa inicial**, e não como resultado conclusivo. A formulação honesta é
+"os dados não sustentam a hipótese de maior descarte em áreas vulneráveis, e
+apontam na direção oposta", não "está provado que o descarte é maior em bairros
+ricos".
+
+::: {.callout-tip appearance="simple"}
+## O que sai desta análise como sólido
+
+Independem das fragilidades acima, e podem ser afirmados sem ressalva: a
+**auditoria da base** e as correções que ela impôs; o **padrão espacial
+agregado** (R, Ripley, Moran, Gi\*, LISA — cinco métodos convergentes); a
+**correção da hipótese nula por RPA** e a releitura por densidade; a
+**hierarquia de proximidade** entre os três critérios; a **independência entre
+os critérios**, que valida a soma da Equação 1; e a **robustez da classificação
+de risco** à variação dos pesos.
+:::
+
 ## Procedimentos deliberadamente não executados
 
 ```{r}

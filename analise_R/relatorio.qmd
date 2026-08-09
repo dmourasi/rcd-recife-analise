@@ -1171,6 +1171,37 @@ unidade **e** seus vizinhos sejam simultaneamente atípicos. Os dois métodos
 convergem no essencial: o cluster de alta densidade é real e situa-se na Zona
 Oeste/Centro.
 
+```{r}
+#| label: fig-moran-scatter
+#| fig-cap: "Diagrama de espalhamento de Moran. Cada ponto é um bairro: no eixo horizontal sua densidade padronizada, no vertical a média padronizada dos vizinhos. A inclinação da reta é o próprio I de Moran. Bairros no quadrante superior direito são núcleos de alta densidade cercados de alta densidade."
+#| fig-height: 4.4
+
+z_b <- as.numeric(scale(bairros$densidade))
+viz_b <- spdep::poly2nb(bairros, queen = TRUE)
+pw_b <- spdep::nb2listw(viz_b, style = "W", zero.policy = TRUE)
+zlag_b <- spdep::lag.listw(pw_b, z_b, zero.policy = TRUE)
+
+ms <- tibble::tibble(bairro = bairros$EBAIRRNOME, z = z_b, z_lag = zlag_b,
+                     quadrante = lisa$Quadrante)
+rotular <- ms |> dplyr::filter(quadrante != "não significativo" | abs(z) > 3)
+
+ggplot(ms, aes(x = z, y = z_lag)) +
+  geom_hline(yintercept = 0, colour = COR$grade) +
+  geom_vline(xintercept = 0, colour = COR$grade) +
+  geom_point(aes(colour = quadrante), size = 1.9, alpha = 0.85) +
+  geom_smooth(method = "lm", se = FALSE, colour = "#333333", linewidth = 0.7) +
+  ggrepel::geom_text_repel(data = rotular, aes(label = stringr::str_to_title(bairro)),
+                           size = 2.7, colour = "#333333", min.segment.length = 0,
+                           segment.colour = COR$neutra, max.overlaps = 20) +
+  scale_colour_manual(values = c("Alto-Alto (núcleo)" = COR$destaque,
+                                 "Baixo-Baixo (vazio)" = COR$primaria,
+                                 "não significativo" = "#bbbbbb"), name = NULL) +
+  labs(x = "Densidade padronizada do bairro (z)",
+       y = "Média padronizada dos vizinhos (defasagem espacial)",
+       caption = sprintf("Inclinação da reta = I de Moran = %s.", fmt_n(moran_I, 3))) +
+  tema_artigo()
+```
+
 ::: {.callout-note collapse="true"}
 ## Nota sobre a resolução do p simulado
 
@@ -1504,6 +1535,39 @@ critérios capturam dimensões **efetivamente distintas** da exposição, o que
 fenômeno. Este é um argumento positivo a favor do modelo que o manuscrito ainda
 não apresenta e que convém incluir na resposta aos revisores.
 
+### Onde estão os pontos de maior risco
+
+A classificação por escore diz *quantos* pontos são críticos, mas não *onde*.
+Para gestão, essa é a informação operacional — e é a que falta no manuscrito.
+
+```{r}
+#| label: fig-mapa-risco
+#| fig-cap: "Localização dos pontos de descarte segundo a classe de risco. Pontos de Classe I aparecem em tom claro e reduzido; as classes II a IV, destacadas e sobrepostas, concentram-se no eixo central da cidade. Esta é a informação operacional para priorização de fiscalização."
+#| fig-height: 7.5
+
+pts_ord <- pts |> dplyr::arrange(Sf)   # críticos desenhados por último, no topo
+
+ggplot() +
+  geom_sf(data = rpa, fill = "#f7f7f7", colour = "#cccccc", linewidth = 0.3) +
+  geom_sf(data = pts_ord, aes(colour = classe_risco, size = classe_risco),
+          alpha = 0.85) +
+  scale_colour_manual(
+    values = c("#c7dcf4", COR$primaria, COR$destaque, "#a02020"), name = "Classe de risco") +
+  scale_size_manual(values = c(0.45, 1.1, 2.1, 3.0), name = "Classe de risco") +
+  geom_sf(data = rpa, fill = NA, colour = "#777777", linewidth = 0.45) +
+  labs(caption = sprintf(
+    "n = %s pontos. Classes II a IV somam %s pontos (%s%% do total).",
+    format(nrow(pts), big.mark = "."),
+    sum(pts$classe_risco != PARAMS$classes_sf[1]),
+    fmt_n(100 * mean(pts$classe_risco != PARAMS$classes_sf[1]), 1))) +
+  theme_void(base_size = 10) +
+  theme(legend.position = "right",
+        plot.background = element_rect(fill = "white", colour = NA),
+        legend.text = element_text(colour = "#333333"),
+        legend.title = element_text(colour = "#333333"),
+        plot.caption = element_text(colour = COR$neutra, hjust = 0, size = 8))
+```
+
 ## Comparação do risco entre RPAs
 
 ```{r}
@@ -1578,6 +1642,26 @@ ggplot(sf::st_drop_geometry(pts), aes(x = factor(RPA), y = Sf)) +
        caption = sprintf("Kruskal-Wallis: H = %s; gl = %d; p < 0,001; ε² = %s (efeito pequeno).",
                          fmt_n(H_rpa, 2), comp_rpa$resumo$gl[1],
                          fmt_n(eps2_rpa, 3))) +
+  tema_artigo()
+```
+
+```{r}
+#| label: fig-composicao-rpa
+#| fig-cap: "Composição das classes de risco dentro de cada RPA. As barras somam 100% por região, o que permite comparar o perfil de gravidade independentemente do número de pontos. RPAs 1, 3 e 6 têm proporcionalmente mais pontos fora da Classe I."
+#| fig-height: 3.6
+
+comp_classe <- sf::st_drop_geometry(pts) |>
+  dplyr::count(RPA, classe_risco) |>
+  dplyr::group_by(RPA) |>
+  dplyr::mutate(pct = 100 * n / sum(n)) |>
+  dplyr::ungroup()
+
+ggplot(comp_classe, aes(x = factor(RPA), y = pct, fill = classe_risco)) +
+  geom_col(width = 0.7) +
+  scale_fill_manual(values = c("#c7dcf4", COR$primaria, COR$destaque, "#a02020"),
+                    name = NULL) +
+  scale_y_continuous(labels = scales::label_percent(scale = 1)) +
+  labs(x = "Região Político-Administrativa", y = "Composição dos pontos") +
   tema_artigo()
 ```
 
@@ -1872,6 +1956,36 @@ tibble::tibble(
 Spearman ρ = `r fmt_n(sp_eco$estimate, 3)`; p = `r fmt_p(sp_eco$p.value)` (n = 6,
 análise exploratória — poder muito baixo).
 
+```{r}
+#| label: fig-cobertura-eco
+#| fig-cap: "Cobertura da rede de ecoestações que recebem RCD. Círculos indicam raios de 1 km e 2 km em torno de cada equipamento. Pontos em laranja estão fora do alcance de 2 km — quase metade do total. A concentração de descarte no eixo central coincide com uma lacuna de cobertura."
+#| fig-height: 7.5
+
+buf1 <- sf::st_union(sf::st_buffer(DADOS$eco_rcc, 1000))
+buf2 <- sf::st_union(sf::st_buffer(DADOS$eco_rcc, 2000))
+pts$fora_2km <- pts$d_eco > 2000
+
+ggplot() +
+  geom_sf(data = rpa, fill = "#f7f7f7", colour = "#dddddd", linewidth = 0.3) +
+  geom_sf(data = buf2, fill = COR$primaria, alpha = 0.13, colour = NA) +
+  geom_sf(data = buf1, fill = COR$primaria, alpha = 0.22, colour = NA) +
+  geom_sf(data = pts, aes(colour = fora_2km), size = 0.5, alpha = 0.75) +
+  geom_sf(data = DADOS$eco_rcc, shape = 21, fill = "#1baf7a", colour = "white",
+          size = 3, stroke = 0.8) +
+  geom_sf(data = rpa, fill = NA, colour = "#777777", linewidth = 0.45) +
+  scale_colour_manual(values = c(`FALSE` = "#7fb0e6", `TRUE` = COR$destaque),
+                      labels = c("a até 2 km", "além de 2 km"), name = "Ponto de descarte") +
+  labs(caption = sprintf(
+    "Círculos verdes: ecoestações que recebem RCD (n = %d). Sombreado: raios de 1 km e 2 km. %s%% dos pontos estão além de 2 km.",
+    nrow(DADOS$eco_rcc), fmt_n(100 * mean(pts$d_eco > 2000), 1))) +
+  theme_void(base_size = 10) +
+  theme(legend.position = "right",
+        plot.background = element_rect(fill = "white", colour = NA),
+        legend.text = element_text(colour = "#333333"),
+        legend.title = element_text(colour = "#333333"),
+        plot.caption = element_text(colour = COR$neutra, hjust = 0, size = 8))
+```
+
 ::: {.callout-important}
 ## Reinterpretação necessária no manuscrito
 
@@ -1885,6 +1999,128 @@ rede de recebimento**.
 :::
 
 ---
+
+# Sínteses para o manuscrito {#sec-sintese}
+
+As três tabelas desta seção consolidam resultados dispersos pelo relatório em
+formato direto para o artigo e para a resposta aos revisores.
+
+## Perfil consolidado das RPAs
+
+```{r}
+#| label: tbl-perfil-rpa
+#| tbl-cap: "Perfil das Regiões Político-Administrativas: território, ocorrência e gravidade"
+
+perfil <- sf::st_drop_geometry(pts) |>
+  dplyr::group_by(RPA) |>
+  dplyr::summarise(
+    Pontos = dplyr::n(),
+    `Sf médio` = mean(Sf),
+    `Sf mediano` = median(Sf),
+    `Classe I (%)` = 100 * mean(classe_risco == PARAMS$classes_sf[1]),
+    `Classes II–IV (%)` = 100 * mean(classe_risco != PARAMS$classes_sf[1]),
+    `Mediana d. água (m)` = median(d_agua),
+    .groups = "drop") |>
+  dplyr::mutate(
+    `Área (km²)` = rpa$area_km2,
+    `Bairros` = DADOS$bairros_por_rpa,
+    `Densidade (pts/km²)` = Pontos / `Área (km²)`,
+    .after = RPA)
+
+perfil |> tab(digitos = 2)
+```
+
+Esta é a tabela que substitui, com dados corretos, a caracterização territorial
+do manuscrito — cuja área da RPA 1 estava equivocada (@sec-auditoria). Ela
+também expõe, lado a lado, a distinção que o artigo não fazia: **ocorrência**
+(contagem, densidade) e **gravidade** (Sf, composição de classes) são dimensões
+distintas, e a região líder em uma não é a líder na outra.
+
+## Bairros prioritários para intervenção
+
+```{r}
+#| label: tbl-prioridade
+#| tbl-cap: "Bairros prioritários, ordenados por densidade de descarte, com indicação de agrupamento espacial e gravidade média"
+
+por_bairro <- sf::st_drop_geometry(pts) |>
+  dplyr::group_by(bairro) |>
+  dplyr::summarise(Pontos = dplyr::n(), `Sf médio` = mean(Sf),
+                   `Classes II–IV` = sum(classe_risco != PARAMS$classes_sf[1]),
+                   .groups = "drop")
+
+prioridade <- sf::st_drop_geometry(bairros) |>
+  dplyr::select(bairro = EBAIRRNOME, `Área (km²)` = area_km2,
+                `Densidade (pts/km²)` = densidade, `% área precária` = pct_precario) |>
+  dplyr::left_join(por_bairro, by = "bairro") |>
+  dplyr::left_join(dplyr::select(gi, bairro = Unidade, `Gi* (z)` = `Gi* (z)`,
+                                 `Agrupamento` = Classificação), by = "bairro") |>
+  dplyr::filter(!is.na(Pontos)) |>
+  dplyr::arrange(dplyr::desc(`Densidade (pts/km²)`)) |>
+  dplyr::mutate(Bairro = stringr::str_to_title(bairro), .before = 1) |>
+  dplyr::select(-bairro) |>
+  head(15)
+
+prioridade |> tab(digitos = 2)
+```
+
+A ordenação por **densidade** (e não por contagem) evita que bairros grandes
+dominem a lista apenas por extensão. A coluna de agrupamento indica quais deles
+integram o cluster estatisticamente significativo — critério objetivo para
+concentrar fiscalização, já que intervir em bairros contíguos de um mesmo
+cluster tende a ser mais eficaz que ações dispersas.
+
+## Tabela-síntese de todos os testes
+
+```{r}
+#| label: tbl-sintese-testes
+#| tbl-cap: "Síntese de todos os testes estatísticos realizados"
+
+sintese <- tibble::tribble(
+  ~Análise, ~Estatística, ~gl, ~p, ~`Tamanho de efeito`, ~Conclusão,
+  "χ² aderência — dist. a unidades de saúde",
+    fmt_n(gof_saude$resumo$`χ²`, 2), "4", fmt_p(gof_saude$resumo$`valor-p`),
+    paste0("w = ", fmt_n(gof_saude$resumo$`Cohen's w`, 2)), "distribuição não uniforme",
+  "χ² aderência — dist. a instituições de ensino",
+    fmt_n(gof_educ$resumo$`χ²`, 2), "4", fmt_p(gof_educ$resumo$`valor-p`),
+    paste0("w = ", fmt_n(gof_educ$resumo$`Cohen's w`, 2)), "distribuição não uniforme",
+  "χ² aderência — dist. a corpos hídricos",
+    fmt_n(gof_agua$resumo$`χ²`, 2), "4", fmt_p(gof_agua$resumo$`valor-p`),
+    paste0("w = ", fmt_n(gof_agua$resumo$`Cohen's w`, 2)), "distribuição não uniforme",
+  "χ² independência — critério × classe",
+    fmt_n(ind$resumo$`χ²`, 2), "8", fmt_p(ind$resumo$`valor-p`),
+    paste0("V = ", fmt_n(v_cramer, 3)), "critérios diferem entre si",
+  "χ² por RPA — H₀ proporcional à área",
+    fmt_n(gof_area$resumo$`χ²`, 2), "5", fmt_p(gof_area$resumo$`valor-p`),
+    paste0("w = ", fmt_n(gof_area$resumo$`Cohen's w`, 2)), "distribuição não homogênea",
+  "Vizinho mais próximo (Clark & Evans)",
+    paste0("R = ", fmt_n(ann_R, 3)), "—", "< 0,001",
+    paste0("z = ", fmt_n(ann_z, 1)), "padrão agregado",
+  "Simulação de aleatoriedade (corpos hídricos)",
+    paste0("razão = ", fmt_n(csr[["Razão obs/esperada"]][1], 3)), "—",
+    fmt_p(csr$`valor-p`[1]), "—", "mais próximo que o acaso",
+  "I de Moran global — densidade por bairro",
+    paste0("I = ", fmt_n(moran_I, 3)), "—", fmt_p(moran_p), "—",
+    "autocorrelação positiva",
+  "Getis-Ord Gi* (FDR)", paste0(nrow(gi_hot), " hot spots"), "—", "< 0,05", "—",
+    "cluster na Zona Oeste/Centro",
+  "LISA (FDR)", paste0(sum(lisa$Quadrante == "Alto-Alto (núcleo)"), " núcleos Alto-Alto"),
+    "—", "< 0,05", "—", "confirma o cluster",
+  "Kruskal-Wallis — Sf entre RPAs",
+    paste0("H = ", fmt_n(H_rpa, 2)), "5", fmt_p(comp_rpa$resumo$`valor-p`[1]),
+    paste0("ε² = ", fmt_n(eps2_rpa, 3)), "RPAs diferem; efeito pequeno",
+  "Binomial negativa — pontos ~ % área precária",
+    paste0("IRR = ", fmt_n(mc$coeficientes[["IRR (exp β)"]][2], 4)), "—",
+    fmt_p(mc$coeficientes$`valor-p`[2]),
+    paste0("pseudo-R² = ", fmt_n(mc$diagnostico[["Pseudo-R² (McFadden)"]], 3)),
+    "menos descarte onde há mais precariedade",
+  "Regressão espacial (SEM)",
+    paste0("β = ", fmt_n(re$comparacao$`β`[2], 4)), "—", fmt_p(p_sem),
+    paste0("λ = ", fmt_n(lambda, 2)), "efeito não significativo sob controle espacial",
+  "Redundância entre critérios (Spearman)",
+    "|ρ| ≤ 0,15", "—", "—", "< 3% de variância comum", "critérios independentes"
+)
+sintese |> tab()
+```
 
 # Limitações {#sec-limitacoes}
 

@@ -148,6 +148,68 @@ análises de robustez.
    resíduo de obra e acompanha o dinamismo construtivo (@sec-determinantes).
 :::
 
+# Guia de leitura: o que cada análise responde {#sec-guia}
+
+Esta seção resume, em linguagem direta, **por que cada análise existe no estudo
+e como ler o seu resultado**. Serve de mapa para quem não vai acompanhar os
+detalhes técnicos.
+
+**Auditoria dos dados (Parte I).** Antes de qualquer conclusão, é preciso saber
+se a base é confiável. Aqui se verifica se as coordenadas caem de fato em
+Recife, quais foram corrigidas e quais tiveram de ser descartadas. *Como ler:*
+se a proporção de registros corrigidos ou excluídos fosse alta, todo o resto
+ficaria comprometido — no caso, `r fmt_n(100 * n$excluido / n$bruto, 1)`% de
+perda é baixo o suficiente para seguir com segurança.
+
+**Estatística descritiva (Parte II).** Descreve as distâncias reais entre os
+pontos e cada critério, em metros, sem depender das faixas de classificação.
+Média e desvio-padrão resumem o conjunto; mediana e quartis são mais confiáveis
+aqui porque as distribuições são assimétricas. Assimetria e curtose medem o
+quanto a distribuição se afasta da normal, e é isso que justifica usar testes
+não paramétricos daí em diante. A curva acumulada permite ler a proporção de
+pontos abaixo de **qualquer** limiar. *Como ler:* quanto menor a mediana, mais
+próximo aquele critério está dos descartes — é o que aponta os corpos hídricos
+como o mais crítico.
+
+**Testes de frequência (Parte III).** Verificam se os pontos se distribuem por
+igual entre classes de distância e entre regiões. O qui-quadrado indica se a
+diferença observada é grande demais para ser acaso; o valor-p abaixo de 0,05
+significa "provavelmente não é acaso". Como em amostras grandes quase tudo dá
+significativo, acompanham-se os **tamanhos de efeito** (Cohen's *w*, V de
+Cramér), que medem se a diferença é grande o bastante para importar na prática.
+Os resíduos padronizados mostram *quais* classes puxam o resultado. *Como ler:*
+p pequeno = diferença real; efeito grande = diferença relevante. As duas coisas
+precisam andar juntas.
+
+**Análise espacial (Parte IV).** É o núcleo do trabalho, porque o objeto do
+estudo é geográfico. O índice de vizinho mais próximo e a função de Ripley
+testam se os pontos estão agrupados ou espalhados ao acaso — valores de R abaixo
+de 1 indicam agrupamento. O I de Moran verifica se bairros vizinhos se parecem
+entre si; o Gi\* e o LISA apontam **onde** ficam esses agrupamentos. A simulação
+de aleatoriedade responde à pergunta mais direta do artigo: os pontos estão mais
+perto dos critérios do que estariam se o descarte ocorresse em qualquer lugar da
+cidade? A densidade Kernel mostra o mesmo padrão como um mapa contínuo, sem
+depender de limites administrativos. Os modelos de contagem e a regressão
+espacial testam **o que explica** a densidade observada. *Como ler:* agrupado e
+autocorrelacionado significa que o problema tem geografia própria — políticas
+devem mirar o cluster identificado, não regiões administrativas inteiras.
+
+**Escore de risco (Parte V).** Converte as distâncias em pontuação e compara as
+regiões. O Kruskal-Wallis indica se há diferença entre as RPAs, o teste de Dunn
+aponta quais pares diferem, e o tamanho de efeito informa se a diferença é
+expressiva. A verificação de redundância confirma que os três critérios medem
+coisas distintas — o que valida somá-los. *Como ler:* quantidade e gravidade são
+dimensões diferentes; uma região pode ter muitos pontos de baixo risco
+individual, e é o que ocorre na RPA 4.
+
+**Robustez (Parte VI).** Responde à pergunta "e se as escolhas tivessem sido
+outras?". Refazem-se os cálculos variando os pesos do modelo, incluindo ou
+excluindo coordenadas duplicadas e alterando o procedimento de limpeza. O
+bootstrap estima a margem de erro sem supor normalidade. *Como ler:* se os
+resultados praticamente não mudam entre cenários, a conclusão é sólida; onde
+mudam — como na troca da escala de pontuação — isso precisa ser declarado como
+limitação.
+
 # Metodologia estatística {#sec-metodo}
 
 ## Delineamento e unidade de análise
